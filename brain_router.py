@@ -23,12 +23,57 @@ logger = logging.getLogger("M2Cortex")
 # 1. Cargar variables de entorno
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 NOTION_API_KEY = os.getenv("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 
-# 2. Inicializar Clientes de API
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+# --- SISTEMA PÍCARO DE ROTACIÓN DE LLAVES GEMINI ---
+API_KEYS = [k for k in [
+    os.getenv("GEMINI_API_KEY"),
+    os.getenv("GEMINI_API_KEY_2"),
+    os.getenv("GEMINI_API_KEY_3"),
+    os.getenv("GEMINI_API_KEY_4")
+] if k and k.strip()]
+
+if not API_KEYS:
+    logger.error("No se ha encontrado ninguna GEMINI_API_KEY válida.")
+
+CURRENT_KEY_INDEX = 0
+
+def get_gemini_client():
+    """Devuelve el cliente de Gemini usando la llave activa en este momento."""
+    return genai.Client(api_key=API_KEYS[CURRENT_KEY_INDEX])
+
+def rotate_gemini_key():
+    """Cambia a la siguiente llave disponible en la lista."""
+    global CURRENT_KEY_INDEX
+    CURRENT_KEY_INDEX = (CURRENT_KEY_INDEX + 1) % len(API_KEYS)
+    logger.warning(f"🔄 Rotando API Key de Gemini. Pasando a la llave {CURRENT_KEY_INDEX + 1} de {len(API_KEYS)}")
+
+def call_gemini_safe(contents, config=None):
+    """Envuelve la llamada a Gemini. Si hay error de cuota (429), rota la llave y reintenta automáticamente."""
+    max_retries = len(API_KEYS)
+    for attempt in range(max_retries):
+        client = get_gemini_client()
+        try:
+            chat = client.chats.create(
+                model="gemini-3.6-flash",
+                config=config
+            )
+            response = chat.send_message(contents)
+            return response.text
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                logger.warning(f"⚠️ Límite de velocidad alcanzado en la llave {CURRENT_KEY_INDEX + 1}.")
+                rotate_gemini_key()
+            else:
+                raise e # Si es un error distinto, lo lanzamos normal
+    
+    # Si da la vuelta a todas las llaves y todas están agotadas:
+    raise Exception("🛑 Todas las llaves de Gemini están al límite. Dame unos 30 segundos de respiro.")
+# ---------------------------------------------------
+
+# 2. Inicializar Cliente de Notion
 notion = NotionClient(auth=NOTION_API_KEY)
 
 # 3. Servidor HTTP de Keep-Alive para Render
@@ -234,16 +279,14 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             if user_message.caption:
                 contents.append(f"Contexto añadido: {user_message.caption}")
 
-        chat = gemini_client.chats.create(
-            model="gemini-3.6-flash",
-            config=types.GenerateContentConfig(
-                system_instruction=PROMPT_CLASSIFIER,
-                response_mime_type="application/json",
-                temperature=0.1,
-            )
+        # --- USAMOS LA FUNCIÓN SEGURA PARA LA CLASIFICACIÓN ---
+        json_config = types.GenerateContentConfig(
+            system_instruction=PROMPT_CLASSIFIER,
+            response_mime_type="application/json",
+            temperature=0.1,
         )
-        response = chat.send_message(contents)
-        parsed_json = json.loads(response.text.strip())
+        raw_response = call_gemini_safe(contents, config=json_config)
+        parsed_json = json.loads(raw_response.strip())
         
         intent = parsed_json.get("intent", "RECORD")
 
@@ -271,10 +314,9 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             Responde a su pregunta de forma conversacional y útil basándote ÚNICAMENTE en estos datos. Sé directo y natural.
             """
             
-            chat_answer = gemini_client.chats.create(model="gemini-3.6-flash")
-            final_answer = chat_answer.send_message([rag_prompt] + contents)
-            
-            await context.bot.send_message(chat_id=chat_id, text=f"💡 {final_answer.text}")
+            # --- USAMOS LA FUNCIÓN SEGURA PARA LA RESPUESTA FINAL ---
+            final_answer_text = call_gemini_safe([rag_prompt] + contents)
+            await context.bot.send_message(chat_id=chat_id, text=f"💡 {final_answer_text}")
 
         else:
             await context.bot.send_message(chat_id=chat_id, text="💾 Guardando en tu base de datos...")
@@ -310,7 +352,7 @@ def main():
     web_thread = threading.Thread(target=start_health_server, daemon=True)
     web_thread.start()
 
-    logger.info("🚀 Iniciando M2Cortex Engine...")
+    logger.info("🚀 Iniciando M2Cortex Engine con Rotación de Llaves...")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_incoming_message))
