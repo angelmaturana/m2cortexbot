@@ -39,7 +39,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"M2Cortex Brain Router is Running 24/7.")
 
     def log_message(self, format, *args):
-        return  # Silenciar logs ruidosos del health check
+        return
 
 def start_health_server():
     port = int(os.environ.get("PORT", 8080))
@@ -85,12 +85,10 @@ def save_to_notion(data: dict):
     tags = [t.replace("#", "").strip() for t in metadata.get("tags", []) if t.strip()]
     amount = float(specific.get("numeric_amount") or 0.0)
 
-    # Validación de fecha
     date_val = specific.get("detected_date")
     if not date_val or date_val.lower() == "null":
         date_val = datetime.now().strftime("%Y-%m-%d")
 
-    # Propiedades de la base de datos
     properties = {
         "Name": {"title": [{"text": {"content": title[:100]}}]},
         "Category": {"select": {"name": category}},
@@ -100,7 +98,6 @@ def save_to_notion(data: dict):
         "Summary": {"rich_text": [{"text": {"content": summary[:2000]}}]}
     }
 
-    # Bloques de contenido interno
     children = [
         {
             "object": "block",
@@ -114,7 +111,6 @@ def save_to_notion(data: dict):
         }
     ]
 
-    # Añadir tareas pendientes como checkboxes si existen
     tasks = specific.get("hidden_tasks", [])
     if tasks:
         children.append({
@@ -132,12 +128,53 @@ def save_to_notion(data: dict):
                 }
             })
 
-    # Creación de la página
     notion.pages.create(
         parent={"database_id": NOTION_DATABASE_ID},
         properties=properties,
         children=children
     )
+
+def query_notion_db(category_filter=None, limit=10):
+    """Busca los últimos registros en Notion para pasárselos a Gemini."""
+    query_params = {
+        "database_id": NOTION_DATABASE_ID,
+        "page_size": limit,
+        "sorts": [{"property": "Date", "direction": "descending"}]
+    }
+    
+    # Si detectamos una categoría específica, filtramos por ella
+    if category_filter and category_filter != "KNOWLEDGE":
+        query_params["filter"] = {
+            "property": "Category",
+            "select": {"equals": category_filter}
+        }
+        
+    try:
+        response = notion.databases.query(**query_params)
+        results = []
+        for page in response.get("results", []):
+            props = page.get("properties", {})
+            
+            # Extraer campos de forma segura
+            title_list = props.get("Name", {}).get("title", [])
+            title = title_list[0]["plain_text"] if title_list else "Sin título"
+            
+            summary_list = props.get("Summary", {}).get("rich_text", [])
+            summary = summary_list[0]["plain_text"] if summary_list else "Sin resumen"
+            
+            amount = props.get("Amount", {}).get("number", 0)
+            date_str = props.get("Date", {}).get("date", {}).get("start", "Sin fecha")
+            
+            # Formatear como texto simple para que Gemini lo lea
+            record_text = f"- [{date_str}] {title}: {summary}"
+            if amount:
+                record_text += f" (Importe: {amount}€)"
+            results.append(record_text)
+            
+        return results
+    except Exception as e:
+        logger.error(f"Error leyendo Notion: {e}")
+        return []
 
 async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -145,12 +182,14 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
 
     chat_id = update.message.chat_id
     user_message = update.message
-    await context.bot.send_message(chat_id=chat_id, text="🧠 M2Cortex procesando y sincronizando con Notion...")
+    
+    # 1. Indicador inicial
+    await context.bot.send_message(chat_id=chat_id, text="🧠 Analizando...")
 
     contents = []
 
     try:
-        # 1. Extracción de Payload (Texto / Imagen / Audio)
+        # Extracción de Payload (Texto / Imagen / Audio)
         if user_message.text:
             contents.append(f"Input de usuario: {user_message.text}")
 
@@ -158,10 +197,7 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             photo_file = await user_message.photo[-1].get_file()
             photo_bytes = await photo_file.download_as_bytearray()
             contents.append(
-                types.Part.from_bytes(
-                    data=bytes(photo_bytes),
-                    mime_type="image/jpeg"
-                )
+                types.Part.from_bytes(data=bytes(photo_bytes), mime_type="image/jpeg")
             )
             if user_message.caption:
                 contents.append(f"Contexto añadido: {user_message.caption}")
@@ -172,15 +208,12 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             audio_bytes = await voice_file.download_as_bytearray()
             mime_type = file_obj.mime_type or ("audio/ogg" if user_message.voice else "audio/mpeg")
             contents.append(
-                types.Part.from_bytes(
-                    data=bytes(audio_bytes),
-                    mime_type=mime_type
-                )
+                types.Part.from_bytes(data=bytes(audio_bytes), mime_type=mime_type)
             )
             if user_message.caption:
                 contents.append(f"Contexto añadido: {user_message.caption}")
 
-        # 2. Ejecución con el nuevo SDK de Gemini usando la interfaz de Chat
+        # 2. Clasificación Inicial (Saber qué quiere el usuario)
         chat = gemini_client.chats.create(
             model="gemini-3.6-flash",
             config=types.GenerateContentConfig(
@@ -189,47 +222,74 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
                 temperature=0.1,
             )
         )
-        
         response = chat.send_message(contents)
-
         parsed_json = json.loads(response.text.strip())
+        
+        intent = parsed_json.get("intent", "RECORD")
 
-        # 3. Persistencia en Notion
-        save_to_notion(parsed_json)
+        # 3. BIFURCACIÓN: ¿Es una consulta o un registro?
+        if intent == "QUERY":
+            await context.bot.send_message(chat_id=chat_id, text="🔎 Buscando en tus memorias de Notion...")
+            
+            # Recuperar registros recientes
+            category = parsed_json.get("master_category")
+            recent_records = query_notion_db(category_filter=category)
+            
+            if not recent_records:
+                await context.bot.send_message(chat_id=chat_id, text="No he encontrado recuerdos relacionados recientes.")
+                return
+                
+            # Pasarle los registros a Gemini para que redacte la respuesta final
+            records_text = "\n".join(recent_records)
+            rag_prompt = f"""
+            El usuario te ha hecho una pregunta. Aquí tienes sus registros más recientes extraídos de Notion:
+            
+            {records_text}
+            
+            Responde a su pregunta de forma conversacional y útil basándote ÚNICAMENTE en estos datos. Sé directo y natural.
+            """
+            
+            # Lanzamos una nueva petición libre (sin forzar JSON) para que nos hable normal
+            chat_answer = gemini_client.chats.create(model="gemini-3.6-flash")
+            final_answer = chat_answer.send_message([rag_prompt] + contents)
+            
+            await context.bot.send_message(chat_id=chat_id, text=f"💡 {final_answer.text}")
 
-        # 4. Respuesta estructurada al usuario
-        meta = parsed_json.get("general_metadata", {})
-        spec = parsed_json.get("specific_data", {})
+        else:
+            # Flujo original: Guardar en Notion
+            await context.bot.send_message(chat_id=chat_id, text="💾 Guardando en tu base de datos...")
+            save_to_notion(parsed_json)
 
-        reply_lines = [
-            "✅ *Registrado en Notion*",
-            f"📌 *Título:* {meta.get('title')}",
-            f"🏷️ *Categoría:* `{parsed_json.get('master_category')}`",
-            f"📝 *Resumen:* {meta.get('executive_summary')}"
-        ]
+            meta = parsed_json.get("general_metadata", {})
+            spec = parsed_json.get("specific_data", {})
 
-        if spec.get("numeric_amount", 0) > 0:
-            reply_lines.append(f"💰 *Importe:* {spec.get('numeric_amount')} €")
+            reply_lines = [
+                "✅ *Registrado en Notion*",
+                f"📌 *Título:* {meta.get('title')}",
+                f"🏷️ *Categoría:* `{parsed_json.get('master_category')}`",
+                f"📝 *Resumen:* {meta.get('executive_summary')}"
+            ]
 
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="\n".join(reply_lines),
-            parse_mode="Markdown"
-        )
+            if spec.get("numeric_amount", 0) > 0:
+                reply_lines.append(f"💰 *Importe:* {spec.get('numeric_amount')} €")
+
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="\n".join(reply_lines),
+                parse_mode="Markdown"
+            )
 
     except Exception as e:
         logger.error(f"Error procesando mensaje: {e}", exc_info=True)
         await context.bot.send_message(chat_id=chat_id, text=f"❌ Error en M2Cortex: {str(e)}")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 M2Cortex activo. Envíame fotos, notas de voz o textos para estructurarlos en Notion.")
+    await update.message.reply_text("👋 M2Cortex activo. Envíame datos para guardar o pregúntame por tus recuerdos.")
 
 def main():
-    # Iniciar servidor web en segundo plano para Render
     web_thread = threading.Thread(target=start_health_server, daemon=True)
     web_thread.start()
 
-    # Iniciar Bot de Telegram
     logger.info("🚀 Iniciando M2Cortex Engine...")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
