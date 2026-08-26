@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import threading
+import requests
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -135,27 +136,35 @@ def save_to_notion(data: dict):
     )
 
 def query_notion_db(category_filter=None, limit=10):
-    """Busca los últimos registros en Notion de forma 100% segura."""
-    query_params = {
-        "database_id": NOTION_DATABASE_ID,
+    """Busca los últimos registros en Notion comunicándose directamente con la API (sin intermediarios)."""
+    url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
+    
+    headers = {
+        "Authorization": f"Bearer {NOTION_API_KEY}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
         "page_size": limit
     }
     
-    # Filtramos solo si es una categoría válida dentro de las que manejamos
     valid_categories = ["FINANCE", "HEALTH", "KNOWLEDGE", "INVENTORY", "DIARY", "CRM"]
     if category_filter in valid_categories and category_filter != "KNOWLEDGE":
-        query_params["filter"] = {
+        payload["filter"] = {
             "property": "Category",
             "select": {"equals": category_filter}
         }
         
     try:
-        response = notion.databases.query(**query_params)
+        response = requests.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        
         results = []
-        for page in response.get("results", []):
+        for page in data.get("results", []):
             props = page.get("properties", {})
             
-            # Extracción blindada campo por campo
             try:
                 title = props.get("Name", {}).get("title", [{"plain_text": "Sin título"}])[0].get("plain_text", "Sin título")
             except Exception:
@@ -184,8 +193,9 @@ def query_notion_db(category_filter=None, limit=10):
             
         return results
     except Exception as e:
-        logger.error(f"Error crítico leyendo Notion: {e}")
-        # En lugar de fallar en silencio, devolvemos un código de error específico
+        logger.error(f"Error crítico conectando directo a Notion: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            return [f"ERROR_NOTION_API: {e.response.text}"]
         return [f"ERROR_NOTION_API: {str(e)}"]
 
 async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -242,7 +252,6 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             category = parsed_json.get("master_category")
             recent_records = query_notion_db(category_filter=category)
             
-            # Detectar si Notion devolvió un error para chivárselo al usuario
             if recent_records and recent_records[0].startswith("ERROR_NOTION_API:"):
                 error_msg = recent_records[0]
                 await context.bot.send_message(chat_id=chat_id, text=f"⚠️ Ups, error al leer Notion:\n`{error_msg}`", parse_mode="Markdown")
