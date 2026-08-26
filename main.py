@@ -102,7 +102,7 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             if user_message.caption:
                 contents.append(f"Contexto añadido: {user_message.caption}")
 
-        # 4. Vídeos y Vídeos circulares (video_note)
+        # 4. Vídeos y Notas de Vídeo circulares
         elif user_message.video or user_message.video_note:
             video_obj = user_message.video or user_message.video_note
             video_file = await video_obj.get_file()

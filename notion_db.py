@@ -66,6 +66,7 @@ def save_to_notion(data: dict):
     if action_date_val and str(action_date_val).lower() != "null":
         properties["Action Date"] = {"date": {"start": str(action_date_val)}}
 
+    raw_ctx = str(data.get("raw_context") or "Sin contexto adicional.")
     children = [
         {
             "object": "block",
@@ -75,7 +76,14 @@ def save_to_notion(data: dict):
         {
             "object": "block",
             "type": "paragraph",
-            "paragraph": {"rich_text": [{"type": "text", "text": data.get("raw_context", "Sin contexto adicional.")}}]}
+            "paragraph": {
+                "rich_text": [
+                    {
+                        "type": "text",
+                        "text": {"content": raw_ctx[:2000]}
+                    }
+                ]
+            }
         }
     ]
 
@@ -91,7 +99,7 @@ def save_to_notion(data: dict):
                 "object": "block",
                 "type": "to_do",
                 "to_do": {
-                    "rich_text": [{"type": "text", "text": str(task)}],
+                    "rich_text": [{"type": "text", "text": {"content": str(task)[:2000]}}],
                     "checked": False
                 }
             })

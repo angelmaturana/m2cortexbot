@@ -32,7 +32,7 @@ def rotate_key():
     logger.warning(f"🔄 Rotando a la API Key de Gemini: Llave {CURRENT_KEY_INDEX + 1} de {len(API_KEYS)}")
 
 def call_gemini_with_retry(contents, config=None):
-    """Envuelve la llamada a Gemini 3.6 Flash con rotación automática de llaves."""
+    """Envuelve la llamada a Gemini 3.6 Flash con rotación automática ante fallos de cuota o clave."""
     max_retries = len(API_KEYS)
     
     for attempt in range(max_retries):
