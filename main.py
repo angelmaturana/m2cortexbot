@@ -92,7 +92,6 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             await context.bot.send_message(chat_id=chat_id, text="🔎 Buscando en tus memorias de Notion...")
             
             category = parsed_json.get("master_category")
-            # Buscar en Notion usando el módulo notion_db
             recent_records = notion_db.query_notion_db(category_filter=category)
             
             if recent_records and recent_records[0].startswith("ERROR_NOTION_API:"):
@@ -119,7 +118,6 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
 
         else:
             await context.bot.send_message(chat_id=chat_id, text="💾 Guardando en tu base de datos...")
-            # Guardar usando el módulo notion_db
             notion_db.save_to_notion(parsed_json)
 
             meta = parsed_json.get("general_metadata", {})
@@ -134,6 +132,15 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
 
             if spec.get("numeric_amount", 0) > 0:
                 reply_lines.append(f"💰 *Importe:* {spec.get('numeric_amount')} €")
+
+            if meta.get("entities"):
+                reply_lines.append(f"👤 *Entidades:* {', '.join(meta.get('entities'))}")
+
+            if spec.get("status"):
+                reply_lines.append(f"📌 *Estado:* `{spec.get('status')}`")
+
+            if spec.get("action_date"):
+                reply_lines.append(f"⏰ *Fecha Acción:* `{spec.get('action_date')}`")
 
             await context.bot.send_message(
                 chat_id=chat_id,

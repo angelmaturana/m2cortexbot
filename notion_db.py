@@ -5,18 +5,16 @@ from datetime import datetime
 from dotenv import load_dotenv
 from notion_client import Client as NotionClient
 
-# Cargar variables y logger
 load_dotenv()
 logger = logging.getLogger("M2Cortex")
 
 NOTION_API_KEY = os.getenv("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 
-# Cliente oficial para la escritura
 notion = NotionClient(auth=NOTION_API_KEY)
 
 def save_to_notion(data: dict):
-    """Guarda los datos estructurados en la tabla de Notion."""
+    """Guarda los datos estructurados en la tabla de Notion gestionando las nuevas columnas."""
     metadata = data.get("general_metadata", {})
     specific = data.get("specific_data", {})
 
@@ -26,9 +24,9 @@ def save_to_notion(data: dict):
     tags = [t.replace("#", "").strip() for t in metadata.get("tags", []) if t.strip()]
     amount = float(specific.get("numeric_amount") or 0.0)
 
+    # 1. Fecha de registro (Date)
     date_val = specific.get("detected_date")
     if not date_val or date_val.lower() == "null":
-        # Guarda fecha y hora exacta con zona horaria (formato ISO 8601)
         date_val = datetime.now().astimezone().isoformat()
 
     properties = {
@@ -39,6 +37,23 @@ def save_to_notion(data: dict):
         "Tags": {"multi_select": [{"name": tag[:100]} for tag in tags]},
         "Summary": {"rich_text": [{"text": {"content": summary[:2000]}}]}
     }
+
+    # 2. Entidades (Entities)
+    entities = metadata.get("entities", [])
+    if entities:
+        clean_entities = [e.strip()[:100] for e in entities if e.strip()]
+        if clean_entities:
+            properties["Entities"] = {"multi_select": [{"name": e} for e in clean_entities]}
+
+    # 3. Estado (Status)
+    status_val = specific.get("status")
+    if status_val and status_val in ["Pendiente", "Completado", "Cancelado"]:
+        properties["Status"] = {"select": {"name": status_val}}
+
+    # 4. Fecha de Acción (Action Date)
+    action_date_val = specific.get("action_date")
+    if action_date_val and str(action_date_val).lower() != "null":
+        properties["Action Date"] = {"date": {"start": action_date_val}}
 
     children = [
         {
