@@ -38,7 +38,7 @@ def call_gemini_with_retry(contents, config=None):
     for attempt in range(max_retries):
         try:
             client = get_gemini_client()
-            chat = client.chats.create(model="gemini-3.6-flash", config=config)
+            chat = client.chats.create(model="gemini-2.5-flash", config=config)
             response = chat.send_message(contents)
             return response
         except Exception as e:
@@ -67,7 +67,7 @@ def get_classifier_prompt():
     today_iso = now.strftime("%Y-%m-%d")
     
     return f"""Eres M2Cortex, un motor avanzado de enrutamiento de datos, memoria cognitiva e indexación financiera.
-Analiza la entrada proporcionada (texto, foto o audio) y clasifícala.
+Analiza la entrada proporcionada (texto, foto, audio o vídeo) y clasifícala.
 
 CONTEXTO TEMPORAL EXACTO (HORA LOCAL ESPAÑOLA):
 - Fecha y hora actual del sistema: {now_str}

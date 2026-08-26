@@ -37,7 +37,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"M2Cortex Brain Router is Running 24/7.")
 
     def log_message(self, format, *args):
-        # Silencia el spam de peticiones HTTP en los logs de Render
+        # Silencia el registro de peticiones HTTP periódicas en los logs
         return
 
 def start_health_server():
@@ -49,7 +49,7 @@ def start_health_server():
 # 3. Worker Autónomo Keep-Alive (Evita suspensión en Render)
 def keep_alive_worker():
     """Envía un ping periódico cada 10 minutos a la URL pública de Render."""
-    time.sleep(30)  # Pausa inicial para arranque completo del contenedor
+    time.sleep(30)
     target_url = os.getenv("RENDER_EXTERNAL_URL", "https://m2cortexbot.onrender.com")
     logger.info(f"💓 Keep-Alive Engine iniciado apuntando a: {target_url}")
 
@@ -63,7 +63,7 @@ def keep_alive_worker():
         except Exception as e:
             logger.warning(f"⚠️ Fluctuación temporal en Keep-Alive Ping: {e}")
 
-        # Espera 10 minutos (600s). Render suspende tras 15 min de inactividad
+        # Espera 10 minutos (600s)
         time.sleep(600)
 
 async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -78,10 +78,11 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
     contents = []
 
     try:
-        # Extraer contenido multimodal
+        # 1. Texto
         if user_message.text:
             contents.append(f"Input de usuario: {user_message.text}")
 
+        # 2. Imágenes / Fotos
         elif user_message.photo:
             photo_file = await user_message.photo[-1].get_file()
             photo_bytes = await photo_file.download_as_bytearray()
@@ -91,6 +92,7 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             if user_message.caption:
                 contents.append(f"Contexto añadido: {user_message.caption}")
 
+        # 3. Audios y Notas de Voz
         elif user_message.voice or user_message.audio:
             file_obj = user_message.voice or user_message.audio
             voice_file = await file_obj.get_file()
@@ -101,6 +103,38 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             )
             if user_message.caption:
                 contents.append(f"Contexto añadido: {user_message.caption}")
+
+        # 4. Vídeos y Notas de Vídeo circulares
+        elif user_message.video or user_message.video_note:
+            video_obj = user_message.video or user_message.video_note
+            video_file = await video_obj.get_file()
+            video_bytes = await video_file.download_as_bytearray()
+            mime_type = getattr(video_obj, "mime_type", None) or "video/mp4"
+            contents.append(
+                types.Part.from_bytes(data=bytes(video_bytes), mime_type=mime_type)
+            )
+            if user_message.caption:
+                contents.append(f"Contexto añadido: {user_message.caption}")
+
+        # 5. Documentos adjuntos
+        elif user_message.document:
+            doc_obj = user_message.document
+            doc_file = await doc_obj.get_file()
+            doc_bytes = await doc_file.download_as_bytearray()
+            mime_type = doc_obj.mime_type or "application/octet-stream"
+            contents.append(
+                types.Part.from_bytes(data=bytes(doc_bytes), mime_type=mime_type)
+            )
+            if user_message.caption:
+                contents.append(f"Contexto añadido: {user_message.caption}")
+
+        # Guardia defensiva: evitar llamar a Gemini si no hay partes de contenido
+        if not contents:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="⚠️ No he detectado contenido procesable (texto, imagen, audio o vídeo)."
+            )
+            return
 
         # 1ª Llamada a Gemini con prompt enriquecido
         json_config = types.GenerateContentConfig(
@@ -119,7 +153,6 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             category = parsed_json.get("master_category")
             query_filters = parsed_json.get("query_filters")
             
-            # Consulta con filtros dinámicos (Transaction Type, Fechas, Entidades) y paginación
             recent_records = notion_db.query_notion_db(
                 query_filters=query_filters,
                 category_filter=category,
@@ -170,25 +203,20 @@ INSTRUCCIONES DE RESPUESTA:
                 f"📝 *Resumen:* {meta.get('executive_summary')}"
             ]
 
-            # Conversión segura de importe numérico
             amount_val = float(spec.get("numeric_amount") or 0.0)
             if amount_val > 0:
                 reply_lines.append(f"💰 *Importe:* {amount_val} €")
 
-            # Validación de tipo de transacción
             if spec.get("transaction_type"):
                 reply_lines.append(f"💳 *Tipo Transacción:* `{spec.get('transaction_type')}`")
 
-            # Validación de entidades
             entities = meta.get("entities")
             if entities and isinstance(entities, list) and len(entities) > 0:
                 reply_lines.append(f"👤 *Entidades:* {', '.join(entities)}")
 
-            # Validación de estado
             if spec.get("status"):
                 reply_lines.append(f"📌 *Estado:* `{spec.get('status')}`")
 
-            # Validación de fecha de acción
             action_date = spec.get("action_date")
             if action_date and str(action_date).lower() != "null":
                 reply_lines.append(f"⏰ *Fecha Acción:* `{action_date}`")
@@ -222,7 +250,7 @@ def main():
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_incoming_message))
     
     logger.info("🤖 M2Cortex escuchando en Telegram...")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
