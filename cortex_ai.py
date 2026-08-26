@@ -1,6 +1,7 @@
 import logging
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -57,16 +58,17 @@ def call_gemini_with_retry(contents, config=None):
     raise Exception("🛑 Todas las llaves de Gemini han fallado (están al límite o son inválidas).")
 
 def get_classifier_prompt():
-    """Genera el prompt inyectando fecha, hora y día de la semana actual."""
-    now = datetime.now().astimezone()
+    """Genera el prompt inyectando fecha, hora (Europe/Madrid) y resumen enriquecido."""
+    tz_madrid = ZoneInfo("Europe/Madrid")
+    now = datetime.now(tz_madrid)
     dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
     dia_semana = dias[now.weekday()]
-    now_str = f"{dia_semana}, {now.strftime('%Y-%m-%d %H:%M:%S (UTC%z)')}"
+    now_str = f"{dia_semana}, {now.strftime('%Y-%m-%d %H:%M:%S (%Z)')}"
     
     return f"""Eres M2Cortex, un motor avanzado de enrutamiento de datos y memoria cognitiva.
 Analiza la entrada proporcionada (texto, foto o audio) y clasifícala.
 
-CONTEXTO TEMPORAL EXACTO:
+CONTEXTO TEMPORAL EXACTO (HORA LOCAL ESPAÑOLA):
 - Fecha y hora actual del sistema: {now_str}
 - Día de la semana actual: {dia_semana}
 
@@ -74,7 +76,13 @@ REGLAS OBLIGATORIAS:
 1. Todo el contenido generado DEBE estar redactado estrictamente en ESPAÑOL.
 2. Identifica nombres de personas, contactos, clientes o entidades y colócalos en 'entities'.
 3. Si el mensaje describe una deuda activa, compromiso, recordatorio o algo no terminado, asigna 'status': "Pendiente". Si describe un pago liquidado o tarea finalizada, asigna 'status': "Completado". En cualquier otro caso sin estado claro, asigna null.
-4. Para calcular 'action_date' ante términos temporales relativos (ej. "mañana", "el próximo lunes", "dentro de 2 horas", "el 15 del mes que viene"), DEBES calcular la fecha exacta basándote ESTRICTAMENTE en la 'Fecha y hora actual del sistema' indicada arriba. Devuélvela siempre en formato ISO 8601 estricto (ej. "YYYY-MM-DDTHH:MM:SS"). Si no se especifica hora exacta, asume las 09:00:00 del día resultante. Si no hay acción futura, asigna null.
+4. Para calcular 'action_date' ante términos temporales relativos (ej. "mañana", "el próximo lunes", "dentro de 2 horas", "el 15 del mes que viene"), DEBES calcular la fecha exacta basándote ESTRICTAMENTE en la 'Fecha y hora actual del sistema' indicada arriba. Devuélvela siempre en formato ISO 8601 estricto con hora (ej. "YYYY-MM-DDTHH:MM:SS"). Si no se especifica hora exacta, asume las 09:00:00 del día resultante. Si no hay acción futura, asigna null.
+5. RESUMEN DETALLADO ('executive_summary'): Debe ser un desglose explicativo y contextualizado completo (de 3 a 6 frases densas). Debe detallar:
+   - Qué ocurrió exactamente y por qué.
+   - Nombres de personas o entidades involucradas.
+   - Cantidades monetarias o numéricas exactas.
+   - Condiciones acordadas, plazos, horas o fechas prometidas.
+   - Estado actual y próximos pasos si los hay.
 
 Devuelve la respuesta estructurada estrictamente con el siguiente esquema JSON:
 {{
@@ -82,7 +90,7 @@ Devuelve la respuesta estructurada estrictamente con el siguiente esquema JSON:
   "master_category": "FINANCE" | "HEALTH" | "KNOWLEDGE" | "INVENTORY" | "DIARY" | "CRM",
   "general_metadata": {{
     "title": "Título descriptivo en español (3 a 5 palabras)",
-    "executive_summary": "Resumen ejecutivo en español (1 a 2 líneas)",
+    "executive_summary": "Explicación detallada y contextualizada con todos los datos clave, condiciones y cifras",
     "tags": ["Etiqueta1", "Etiqueta2"],
     "entities": ["PersonaOEntidad1", "PersonaOEntidad2"],
     "sentiment": "Positive" | "Neutral" | "Negative"

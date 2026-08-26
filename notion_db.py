@@ -2,6 +2,7 @@ import logging
 import os
 import requests
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from notion_client import Client as NotionClient
 
@@ -21,13 +22,14 @@ def save_to_notion(data: dict):
     title = metadata.get("title", "Entrada sin título")
     category = data.get("master_category", "KNOWLEDGE")
     summary = metadata.get("executive_summary", "")
-    tags = [t.replace("#", "").strip() for t in metadata.get("tags", []) if t.strip()]
+    tags = [t.replace("#", "").strip() for t in metadata.get("tags", []) if isinstance(t, str) and t.strip()]
     amount = float(specific.get("numeric_amount") or 0.0)
 
-    # 1. Fecha de registro (Date)
+    # 1. Fecha de registro (Date en zona horaria Europe/Madrid)
     date_val = specific.get("detected_date")
     if not date_val or str(date_val).lower() == "null":
-        date_val = datetime.now().astimezone().isoformat()
+        tz_madrid = ZoneInfo("Europe/Madrid")
+        date_val = datetime.now(tz_madrid).isoformat()
 
     properties = {
         "Name": {"title": [{"text": {"content": title[:100]}}]},
@@ -69,7 +71,7 @@ def save_to_notion(data: dict):
     ]
 
     tasks = specific.get("hidden_tasks", [])
-    if tasks:
+    if tasks and isinstance(tasks, list):
         children.append({
             "object": "block",
             "type": "heading_2",

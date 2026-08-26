@@ -4,6 +4,7 @@ import logging
 import os
 import threading
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from dotenv import load_dotenv
 
@@ -105,15 +106,16 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
                 return
                 
             records_text = "\n".join(recent_records)
-            now_str = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+            tz_madrid = ZoneInfo("Europe/Madrid")
+            now_str = datetime.now(tz_madrid).strftime("%Y-%m-%d %H:%M:%S (%Z)")
             rag_prompt = f"""
-            Fecha actual del sistema: {now_str}
-            El usuario te ha hecho una pregunta. Aquí tienes sus registros más recientes extraídos de Notion:
-            
-            {records_text}
-            
-            Responde a su pregunta de forma conversacional y útil basándote ÚNICAMENTE en estos datos y teniendo en cuenta la fecha actual. Sé directo y natural.
-            """
+Fecha y hora actual en España: {now_str}
+El usuario te ha hecho una pregunta. Aquí tienes sus registros más recientes extraídos de Notion:
+
+{records_text}
+
+Responde a su pregunta de forma conversacional y útil basándote ÚNICAMENTE en estos datos y teniendo en cuenta la fecha y hora actual en España. Sé directo y natural.
+"""
             
             # 2ª Llamada a Gemini para RAG
             final_answer = cortex_ai.call_gemini_with_retry([rag_prompt] + contents)
