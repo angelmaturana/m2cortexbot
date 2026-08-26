@@ -135,15 +135,15 @@ def save_to_notion(data: dict):
     )
 
 def query_notion_db(category_filter=None, limit=10):
-    """Busca los últimos registros en Notion para pasárselos a Gemini."""
+    """Busca los últimos registros en Notion de forma 100% segura."""
     query_params = {
         "database_id": NOTION_DATABASE_ID,
-        "page_size": limit,
-        "sorts": [{"property": "Date", "direction": "descending"}]
+        "page_size": limit
     }
     
-    # Si detectamos una categoría específica, filtramos por ella
-    if category_filter and category_filter != "KNOWLEDGE":
+    # Filtramos solo si es una categoría válida dentro de las que manejamos
+    valid_categories = ["FINANCE", "HEALTH", "KNOWLEDGE", "INVENTORY", "DIARY", "CRM"]
+    if category_filter in valid_categories and category_filter != "KNOWLEDGE":
         query_params["filter"] = {
             "property": "Category",
             "select": {"equals": category_filter}
@@ -155,26 +155,38 @@ def query_notion_db(category_filter=None, limit=10):
         for page in response.get("results", []):
             props = page.get("properties", {})
             
-            # Extraer campos de forma segura
-            title_list = props.get("Name", {}).get("title", [])
-            title = title_list[0]["plain_text"] if title_list else "Sin título"
+            # Extracción blindada campo por campo
+            try:
+                title = props.get("Name", {}).get("title", [{"plain_text": "Sin título"}])[0].get("plain_text", "Sin título")
+            except Exception:
+                title = "Sin título"
+                
+            try:
+                summary = props.get("Summary", {}).get("rich_text", [{"plain_text": "Sin resumen"}])[0].get("plain_text", "Sin resumen")
+            except Exception:
+                summary = "Sin resumen"
+                
+            try:
+                amount = props.get("Amount", {}).get("number", 0) or 0
+            except Exception:
+                amount = 0
             
-            summary_list = props.get("Summary", {}).get("rich_text", [])
-            summary = summary_list[0]["plain_text"] if summary_list else "Sin resumen"
+            try:
+                date_obj = props.get("Date", {}).get("date")
+                date_str = date_obj.get("start") if date_obj else "Sin fecha"
+            except Exception:
+                date_str = "Sin fecha"
             
-            amount = props.get("Amount", {}).get("number", 0)
-            date_str = props.get("Date", {}).get("date", {}).get("start", "Sin fecha")
-            
-            # Formatear como texto simple para que Gemini lo lea
             record_text = f"- [{date_str}] {title}: {summary}"
-            if amount:
+            if amount > 0:
                 record_text += f" (Importe: {amount}€)"
             results.append(record_text)
             
         return results
     except Exception as e:
-        logger.error(f"Error leyendo Notion: {e}")
-        return []
+        logger.error(f"Error crítico leyendo Notion: {e}")
+        # En lugar de fallar en silencio, devolvemos un código de error específico
+        return [f"ERROR_NOTION_API: {str(e)}"]
 
 async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -183,13 +195,11 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
     chat_id = update.message.chat_id
     user_message = update.message
     
-    # 1. Indicador inicial
     await context.bot.send_message(chat_id=chat_id, text="🧠 Analizando...")
 
     contents = []
 
     try:
-        # Extracción de Payload (Texto / Imagen / Audio)
         if user_message.text:
             contents.append(f"Input de usuario: {user_message.text}")
 
@@ -213,7 +223,6 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             if user_message.caption:
                 contents.append(f"Contexto añadido: {user_message.caption}")
 
-        # 2. Clasificación Inicial (Saber qué quiere el usuario)
         chat = gemini_client.chats.create(
             model="gemini-3.6-flash",
             config=types.GenerateContentConfig(
@@ -227,19 +236,22 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
         
         intent = parsed_json.get("intent", "RECORD")
 
-        # 3. BIFURCACIÓN: ¿Es una consulta o un registro?
         if intent == "QUERY":
             await context.bot.send_message(chat_id=chat_id, text="🔎 Buscando en tus memorias de Notion...")
             
-            # Recuperar registros recientes
             category = parsed_json.get("master_category")
             recent_records = query_notion_db(category_filter=category)
             
+            # Detectar si Notion devolvió un error para chivárselo al usuario
+            if recent_records and recent_records[0].startswith("ERROR_NOTION_API:"):
+                error_msg = recent_records[0]
+                await context.bot.send_message(chat_id=chat_id, text=f"⚠️ Ups, error al leer Notion:\n`{error_msg}`", parse_mode="Markdown")
+                return
+
             if not recent_records:
                 await context.bot.send_message(chat_id=chat_id, text="No he encontrado recuerdos relacionados recientes.")
                 return
                 
-            # Pasarle los registros a Gemini para que redacte la respuesta final
             records_text = "\n".join(recent_records)
             rag_prompt = f"""
             El usuario te ha hecho una pregunta. Aquí tienes sus registros más recientes extraídos de Notion:
@@ -249,14 +261,12 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             Responde a su pregunta de forma conversacional y útil basándote ÚNICAMENTE en estos datos. Sé directo y natural.
             """
             
-            # Lanzamos una nueva petición libre (sin forzar JSON) para que nos hable normal
             chat_answer = gemini_client.chats.create(model="gemini-3.6-flash")
             final_answer = chat_answer.send_message([rag_prompt] + contents)
             
             await context.bot.send_message(chat_id=chat_id, text=f"💡 {final_answer.text}")
 
         else:
-            # Flujo original: Guardar en Notion
             await context.bot.send_message(chat_id=chat_id, text="💾 Guardando en tu base de datos...")
             save_to_notion(parsed_json)
 
