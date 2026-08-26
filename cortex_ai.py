@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -9,7 +10,7 @@ from google.genai import types
 load_dotenv()
 logger = logging.getLogger("M2Cortex")
 
-# --- SISTEMA DE ROTACIÓN DE 6 LLAVES GEMINI ---
+# --- SISTEMA DE ROTACIÓN Y BALANCEO DE 6 LLAVES GEMINI ---
 API_KEYS = []
 for key_name in [
     "GEMINI_API_KEY",
@@ -28,23 +29,26 @@ if not API_KEYS:
 
 CURRENT_KEY_INDEX = 0
 
-def get_gemini_client():
-    """Devuelve el cliente de Gemini apuntando a la llave activa."""
-    return genai.Client(api_key=API_KEYS[CURRENT_KEY_INDEX])
-
-def rotate_key():
-    """Rota cíclicamente a la siguiente API Key disponible."""
+def get_next_gemini_client():
+    """Balancea la carga proactivamente entre todas las llaves disponibles."""
     global CURRENT_KEY_INDEX
+    key = API_KEYS[CURRENT_KEY_INDEX]
+    active_idx = CURRENT_KEY_INDEX + 1
+    # Rota circularmente para la siguiente petición entrante
     CURRENT_KEY_INDEX = (CURRENT_KEY_INDEX + 1) % len(API_KEYS)
-    logger.warning(f"🔄 Rotando a la API Key de Gemini: Llave {CURRENT_KEY_INDEX + 1} de {len(API_KEYS)}")
+    return genai.Client(api_key=key), active_idx
 
 def call_gemini_with_retry(contents, config=None):
-    """Envuelve la llamada a Gemini 3.6 Flash con rotación automática ante fallos de cuota o clave."""
-    max_retries = len(API_KEYS)
+    """
+    Ejecuta llamadas a Gemini 3.6 Flash con:
+    1. Balanceo de carga continuo entre peticiones.
+    2. Reintentos con micro-pausa (backoff) ante límites 429.
+    """
+    max_retries = len(API_KEYS) * 2  # Permite 2 vueltas completas al ciclo
     
     for attempt in range(max_retries):
+        client, key_num = get_next_gemini_client()
         try:
-            client = get_gemini_client()
             chat = client.chats.create(model="gemini-3.6-flash", config=config)
             response = chat.send_message(contents)
             return response
@@ -57,12 +61,16 @@ def call_gemini_with_retry(contents, config=None):
             ]
             
             if any(err in error_str for err in error_triggers):
-                logger.warning(f"⚠️ Llave {CURRENT_KEY_INDEX + 1} falló o alcanzó límite. Rotando...")
-                rotate_key()
+                sleep_time = 1.0 + (attempt * 0.5)
+                logger.warning(
+                    f"⚠️ Llave {key_num} saturada o no disponible ({error_str[:60]}...). "
+                    f"Pausa de seguridad de {sleep_time:.1f}s y probando siguiente llave..."
+                )
+                time.sleep(sleep_time)
             else:
                 raise e
                 
-    raise Exception("🛑 Todas las llaves de Gemini han fallado (están al límite o son inválidas).")
+    raise Exception("🛑 Todas las llaves de Gemini están temporalmente saturadas. Espera unos segundos.")
 
 def get_classifier_prompt():
     """Genera el prompt inyectando fecha, tipado de transacción, filtros RAG y soporte multimodal."""
