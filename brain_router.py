@@ -88,7 +88,8 @@ def save_to_notion(data: dict):
 
     date_val = specific.get("detected_date")
     if not date_val or date_val.lower() == "null":
-        date_val = datetime.now().strftime("%Y-%m-%d")
+        # Guarda fecha y hora exacta con zona horaria (formato ISO 8601)
+        date_val = datetime.now().astimezone().isoformat()
 
     properties = {
         "Name": {"title": [{"text": {"content": title[:100]}}]},
