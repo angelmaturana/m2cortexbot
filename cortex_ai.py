@@ -30,7 +30,7 @@ def rotate_key():
     logger.warning(f"🔄 Rotando a la API Key de Gemini: Llave {CURRENT_KEY_INDEX + 1} de {len(API_KEYS)}")
 
 def call_gemini_with_retry(contents, config=None):
-    """Envuelve la petición a Gemini. Si salta límite 429, rota la llave y reintenta."""
+    """Envuelve la petición a Gemini. Si salta límite (429) o llave falsa (401), rota y reintenta."""
     max_retries = len(API_KEYS)
     
     for attempt in range(max_retries):
@@ -41,13 +41,14 @@ def call_gemini_with_retry(contents, config=None):
             return response
         except Exception as e:
             error_str = str(e)
-            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "Quota" in error_str:
-                logger.warning(f"⚠️ Límite agotado en la llave {CURRENT_KEY_INDEX + 1}. Intentando con la siguiente...")
+            # AQUÍ ESTÁ LA MEJORA: Ahora atrapamos el 401 (UNAUTHENTICATED) para que no rompa el bot
+            if any(err in error_str for err in ["429", "RESOURCE_EXHAUSTED", "Quota", "401", "UNAUTHENTICATED"]):
+                logger.warning(f"⚠️ Llave {CURRENT_KEY_INDEX + 1} agotada o INVÁLIDA (Error de API). Rotando a la siguiente...")
                 rotate_key()
             else:
                 raise e
                 
-    raise Exception("🛑 Todas las llaves de Gemini están al límite. Dame unos 30 segundos de respiro antes de volver a preguntar.")
+    raise Exception("🛑 Todas las llaves de Gemini han fallado (están al límite o mal copiadas en Render).")
 
 # 4. Prompt Maestro de Clasificación
 PROMPT_CLASSIFIER = """
