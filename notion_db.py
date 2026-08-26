@@ -15,7 +15,7 @@ NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 notion = NotionClient(auth=NOTION_API_KEY)
 
 def save_to_notion(data: dict):
-    """Guarda los datos estructurados en Notion integrando Transaction Type."""
+    """Guarda los datos estructurados en Notion garantizando siempre la hora en Date."""
     metadata = data.get("general_metadata", {})
     specific = data.get("specific_data", {})
 
@@ -25,11 +25,16 @@ def save_to_notion(data: dict):
     tags = [t.replace("#", "").strip() for t in metadata.get("tags", []) if isinstance(t, str) and t.strip()]
     amount = float(specific.get("numeric_amount") or 0.0)
 
-    # 1. Fecha de registro (Europe/Madrid)
+    # 1. Fecha de registro con HORA COMPLETA (Europe/Madrid)
+    tz_madrid = ZoneInfo("Europe/Madrid")
     date_val = specific.get("detected_date")
+    
     if not date_val or str(date_val).lower() == "null":
-        tz_madrid = ZoneInfo("Europe/Madrid")
         date_val = datetime.now(tz_madrid).isoformat()
+    elif len(str(date_val)) == 10 and "T" not in str(date_val):
+        # Si llega como "YYYY-MM-DD", se le anexa la hora exacta actual para no perder el timestamp
+        current_time = datetime.now(tz_madrid).strftime("%H:%M:%S")
+        date_val = f"{date_val}T{current_time}"
 
     properties = {
         "Name": {"title": [{"text": {"content": title[:100]}}]},

@@ -87,7 +87,9 @@ REGLAS OBLIGATORIAS:
    - "Pendiente": Para deudas activas ("Me Deben" o "Debo"), tareas no terminadas o alarmas.
    - "Completado": Para gastos liquidados, ingresos recibidos o tareas ya ejecutadas.
    - null: Entradas informativas neutras sin ciclo de vida.
-5. Para calcular 'action_date' ante términos relativos (ej. "mañana", "el próximo lunes"), calcúlala en base a la 'Fecha y hora actual del sistema' en formato ISO 8601 (YYYY-MM-DDTHH:MM:SS). Si no se indica hora, asume 09:00:00.
+5. FECHAS:
+   - 'detected_date': Si el evento ocurrió en una fecha/hora pasada o específica diferente al momento actual (ej. "ayer a las 20:00", "el 12 de agosto a las 10:00"), calcúlala en formato ISO 8601 completo (YYYY-MM-DDTHH:MM:SS). Si el evento ocurre en el momento actual o no se especifica hora/fecha pasada, asigna estrictamente null para registrar la marca de tiempo exacta del sistema.
+   - 'action_date': Si el mensaje especifica una acción/alarma futura (ej. "mañana a las 11:30"), calcúlala en base a la 'Fecha y hora actual del sistema' en formato ISO 8601 (YYYY-MM-DDTHH:MM:SS). Si no se indica hora, asume 09:00:00. Si no hay acción futura, asigna null.
 6. RESUMEN DETALLADO ('executive_summary'): Desglose completo (3 a 6 frases densas, máximo 1.500 caracteres) con motivos, cifras, acuerdos y estado.
 7. SI INTENT ES 'QUERY':
    - Configura 'query_filters' con precisión:
@@ -117,7 +119,7 @@ Devuelve la respuesta estructurada estrictamente con el siguiente esquema JSON:
   "specific_data": {{
     "numeric_amount": 0.00,
     "transaction_type": "Gasto" | "Ingreso" | "Me Deben" | "Debo" | null,
-    "detected_date": "YYYY-MM-DD or null",
+    "detected_date": "YYYY-MM-DDTHH:MM:SS or null",
     "action_date": "YYYY-MM-DDTHH:MM:SS or null",
     "status": "Pendiente" | "Completado" | "Cancelado" | null,
     "hidden_tasks": ["Tarea detectada en español"]
