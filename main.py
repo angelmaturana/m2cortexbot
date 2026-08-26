@@ -130,17 +130,24 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
                 f"📝 *Resumen:* {meta.get('executive_summary')}"
             ]
 
-            if spec.get("numeric_amount", 0) > 0:
-                reply_lines.append(f"💰 *Importe:* {spec.get('numeric_amount')} €")
+            # Conversión segura del importe numérico contra valores None o null
+            amount_val = float(spec.get("numeric_amount") or 0.0)
+            if amount_val > 0:
+                reply_lines.append(f"💰 *Importe:* {amount_val} €")
 
-            if meta.get("entities"):
-                reply_lines.append(f"👤 *Entidades:* {', '.join(meta.get('entities'))}")
+            # Validación segura de entidades (lista no vacía)
+            entities = meta.get("entities")
+            if entities and isinstance(entities, list) and len(entities) > 0:
+                reply_lines.append(f"👤 *Entidades:* {', '.join(entities)}")
 
+            # Validación de estado
             if spec.get("status"):
                 reply_lines.append(f"📌 *Estado:* `{spec.get('status')}`")
 
-            if spec.get("action_date"):
-                reply_lines.append(f"⏰ *Fecha Acción:* `{spec.get('action_date')}`")
+            # Validación de fecha de acción
+            action_date = spec.get("action_date")
+            if action_date and str(action_date).lower() != "null":
+                reply_lines.append(f"⏰ *Fecha Acción:* `{action_date}`")
 
             await context.bot.send_message(
                 chat_id=chat_id,
