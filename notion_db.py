@@ -1,0 +1,140 @@
+import logging
+import os
+import requests
+from datetime import datetime
+from dotenv import load_dotenv
+from notion_client import Client as NotionClient
+
+# Cargar variables y logger
+load_dotenv()
+logger = logging.getLogger("M2Cortex")
+
+NOTION_API_KEY = os.getenv("NOTION_API_KEY")
+NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
+
+# Cliente oficial para la escritura
+notion = NotionClient(auth=NOTION_API_KEY)
+
+def save_to_notion(data: dict):
+    """Guarda los datos estructurados en la tabla de Notion."""
+    metadata = data.get("general_metadata", {})
+    specific = data.get("specific_data", {})
+
+    title = metadata.get("title", "Entrada sin título")
+    category = data.get("master_category", "KNOWLEDGE")
+    summary = metadata.get("executive_summary", "")
+    tags = [t.replace("#", "").strip() for t in metadata.get("tags", []) if t.strip()]
+    amount = float(specific.get("numeric_amount") or 0.0)
+
+    date_val = specific.get("detected_date")
+    if not date_val or date_val.lower() == "null":
+        # Guarda fecha y hora exacta con zona horaria (formato ISO 8601)
+        date_val = datetime.now().astimezone().isoformat()
+
+    properties = {
+        "Name": {"title": [{"text": {"content": title[:100]}}]},
+        "Category": {"select": {"name": category}},
+        "Date": {"date": {"start": date_val}},
+        "Amount": {"number": amount},
+        "Tags": {"multi_select": [{"name": tag[:100]} for tag in tags]},
+        "Summary": {"rich_text": [{"text": {"content": summary[:2000]}}]}
+    }
+
+    children = [
+        {
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {"rich_text": [{"type": "text", "text": {"content": "🔍 Detalle y Contexto"}}]}
+        },
+        {
+            "object": "block",
+            "type": "paragraph",
+            "paragraph": {"rich_text": [{"type": "text", "text": {"content": data.get("raw_context", "Sin contexto adicional.")}}]}
+        }
+    ]
+
+    tasks = specific.get("hidden_tasks", [])
+    if tasks:
+        children.append({
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {"rich_text": [{"type": "text", "text": {"content": "✅ Tareas Detectadas"}}]}
+        })
+        for task in tasks:
+            children.append({
+                "object": "block",
+                "type": "to_do",
+                "to_do": {
+                    "rich_text": [{"type": "text", "text": {"content": task}}],
+                    "checked": False
+                }
+            })
+
+    notion.pages.create(
+        parent={"database_id": NOTION_DATABASE_ID},
+        properties=properties,
+        children=children
+    )
+
+def query_notion_db(category_filter=None, limit=10):
+    """Busca los últimos registros en Notion comunicándose directamente con la API HTTP."""
+    url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
+    
+    headers = {
+        "Authorization": f"Bearer {NOTION_API_KEY}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "page_size": limit
+    }
+    
+    valid_categories = ["FINANCE", "HEALTH", "KNOWLEDGE", "INVENTORY", "DIARY", "CRM"]
+    if category_filter in valid_categories and category_filter != "KNOWLEDGE":
+        payload["filter"] = {
+            "property": "Category",
+            "select": {"equals": category_filter}
+        }
+        
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        
+        results = []
+        for page in data.get("results", []):
+            props = page.get("properties", {})
+            
+            try:
+                title = props.get("Name", {}).get("title", [{"plain_text": "Sin título"}])[0].get("plain_text", "Sin título")
+            except Exception:
+                title = "Sin título"
+                
+            try:
+                summary = props.get("Summary", {}).get("rich_text", [{"plain_text": "Sin resumen"}])[0].get("plain_text", "Sin resumen")
+            except Exception:
+                summary = "Sin resumen"
+                
+            try:
+                amount = props.get("Amount", {}).get("number", 0) or 0
+            except Exception:
+                amount = 0
+            
+            try:
+                date_obj = props.get("Date", {}).get("date")
+                date_str = date_obj.get("start") if date_obj else "Sin fecha"
+            except Exception:
+                date_str = "Sin fecha"
+            
+            record_text = f"- [{date_str}] {title}: {summary}"
+            if amount > 0:
+                record_text += f" (Importe: {amount}€)"
+            results.append(record_text)
+            
+        return results
+    except Exception as e:
+        logger.error(f"Error crítico conectando directo a Notion: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            return [f"ERROR_NOTION_API: {e.response.text}"]
+        return [f"ERROR_NOTION_API: {str(e)}"]
