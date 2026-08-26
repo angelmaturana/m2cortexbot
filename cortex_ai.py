@@ -58,7 +58,7 @@ def call_gemini_with_retry(contents, config=None):
     raise Exception("🛑 Todas las llaves de Gemini han fallado (están al límite o son inválidas).")
 
 def get_classifier_prompt():
-    """Genera el prompt inyectando fecha, hora (Europe/Madrid), resumen denso y filtros RAG."""
+    """Genera el prompt inyectando fecha, tipado de transacción y filtros RAG."""
     tz_madrid = ZoneInfo("Europe/Madrid")
     now = datetime.now(tz_madrid)
     dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
@@ -66,7 +66,7 @@ def get_classifier_prompt():
     now_str = f"{dia_semana}, {now.strftime('%Y-%m-%d %H:%M:%S (%Z)')}"
     today_iso = now.strftime("%Y-%m-%d")
     
-    return f"""Eres M2Cortex, un motor avanzado de enrutamiento de datos, memoria cognitiva e indexación de bases de datos.
+    return f"""Eres M2Cortex, un motor avanzado de enrutamiento de datos, memoria cognitiva e indexación financiera.
 Analiza la entrada proporcionada (texto, foto o audio) y clasifícala.
 
 CONTEXTO TEMPORAL EXACTO (HORA LOCAL ESPAÑOLA):
@@ -77,15 +77,23 @@ CONTEXTO TEMPORAL EXACTO (HORA LOCAL ESPAÑOLA):
 REGLAS OBLIGATORIAS:
 1. Todo el contenido generado DEBE estar redactado estrictamente en ESPAÑOL.
 2. Identifica nombres de personas, contactos, clientes o entidades y colócalos en 'entities'.
-3. Si el mensaje describe una deuda activa, compromiso, recordatorio o algo no terminado, asigna 'status': "Pendiente". Si describe un pago liquidado o tarea finalizada, asigna 'status': "Completado". En cualquier otro caso sin estado claro, asigna null.
-4. Para calcular 'action_date' ante términos temporales relativos (ej. "mañana", "el próximo lunes"), calcúlala basándote ESTRICTAMENTE en la 'Fecha y hora actual del sistema' en formato ISO 8601 estricto con hora (YYYY-MM-DDTHH:MM:SS). Si no se especifica hora, asume 09:00:00.
-5. RESUMEN DETALLADO ('executive_summary'): Desglose explicativo completo (3 a 6 frases densas) con motivos, acuerdos, cifras monetarias y estado actual.
-6. SI INTENT ES 'QUERY':
-   - Configura 'query_filters' para recuperar datos quirúrgicos de Notion.
-   - Si pregunta por alguien específico (ej. "cuánto me debe Neo"), pon "Neo" en 'entities'.
-   - Si pregunta por "gastos de hoy", pon 'category': "FINANCE", 'date_start': "{today_iso}".
-   - Si pregunta por una categoría genérica (ej. "qué citas de salud tengo"), pon 'category': "HEALTH".
-   - Si la consulta es amplia o no acota fechas/entidades, deja los filtros vacíos o null para traer los más recientes.
+3. TIPADO FINANCIERO ('transaction_type'):
+   - "Gasto": Compras, consumos, facturas pagadas o salidas directas de dinero.
+   - "Ingreso": Cobros directos recibidos, salarios o entradas de dinero.
+   - "Me Deben": Préstamos realizados a terceros o saldos pendientes a favor del usuario.
+   - "Debo": Deudas o compromisos de pago que el usuario asume ante un tercero.
+   - null: Si la entrada no es una operación económica ni involucra dinero.
+4. ESTADO ('status'):
+   - "Pendiente": Para deudas activas ("Me Deben" o "Debo"), tareas no terminadas o alarmas.
+   - "Completado": Para gastos liquidados, ingresos recibidos o tareas ya ejecutadas.
+   - null: Entradas informativas neutras sin ciclo de vida.
+5. Para calcular 'action_date' ante términos relativos (ej. "mañana", "el próximo lunes"), calcúlala en base a la 'Fecha y hora actual del sistema' en formato ISO 8601 (YYYY-MM-DDTHH:MM:SS). Si no se indica hora, asume 09:00:00.
+6. RESUMEN DETALLADO ('executive_summary'): Desglose completo (3 a 6 frases densas, máximo 1.500 caracteres) con motivos, cifras, acuerdos y estado.
+7. SI INTENT ES 'QUERY':
+   - Configura 'query_filters' con precisión:
+     - Si pregunta por deudas por cobrar: 'transaction_type': "Me Deben", 'status': "Pendiente".
+     - Si pregunta por gastos de hoy: 'category': "FINANCE", 'transaction_type': "Gasto", 'date_start': "{today_iso}".
+     - Si pregunta por alguien específico: pon su nombre en 'entities'.
 
 Devuelve la respuesta estructurada estrictamente con el siguiente esquema JSON:
 {{
@@ -94,19 +102,21 @@ Devuelve la respuesta estructurada estrictamente con el siguiente esquema JSON:
   "query_filters": {{
     "entities": ["EntidadBuscada"],
     "category": "FINANCE" | "HEALTH" | "KNOWLEDGE" | "INVENTORY" | "DIARY" | "CRM" | null,
+    "transaction_type": "Gasto" | "Ingreso" | "Me Deben" | "Debo" | null,
     "status": "Pendiente" | "Completado" | "Cancelado" | null,
     "date_start": "YYYY-MM-DD or null",
     "date_end": "YYYY-MM-DD or null"
   }},
   "general_metadata": {{
     "title": "Título descriptivo en español (3 a 5 palabras)",
-    "executive_summary": "Explicación detallada y contextualizada con todos los datos clave, condiciones y cifras",
+    "executive_summary": "Explicación detallada de hasta 1500 caracteres con contexto y acuerdos",
     "tags": ["Etiqueta1", "Etiqueta2"],
     "entities": ["PersonaOEntidad1", "PersonaOEntidad2"],
     "sentiment": "Positive" | "Neutral" | "Negative"
   }},
   "specific_data": {{
     "numeric_amount": 0.00,
+    "transaction_type": "Gasto" | "Ingreso" | "Me Deben" | "Debo" | null,
     "detected_date": "YYYY-MM-DD or null",
     "action_date": "YYYY-MM-DDTHH:MM:SS or null",
     "status": "Pendiente" | "Completado" | "Cancelado" | null,

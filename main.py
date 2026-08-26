@@ -96,7 +96,7 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             category = parsed_json.get("master_category")
             query_filters = parsed_json.get("query_filters")
             
-            # Consulta con filtros dinámicos y paginación
+            # Consulta con filtros dinámicos (Transaction Type, Fechas, Entidades) y paginación
             recent_records = notion_db.query_notion_db(
                 query_filters=query_filters,
                 category_filter=category,
@@ -124,7 +124,8 @@ El usuario te ha hecho una pregunta. Aquí tienes el historial cronológico extr
 
 INSTRUCCIONES DE RESPUESTA:
 - Los registros están ordenados cronológicamente (los eventos más recientes aparecen al final).
-- Si hay varios eventos sobre un mismo asunto o persona (ej. deudas o llamadas), los registros más recientes actualizan y prevalecen sobre los anteriores.
+- Si hay varios eventos sobre un mismo asunto o persona (ej. deudas, cobros o citas), los registros más recientes actualizan y prevalecen sobre los anteriores.
+- Distingue claramente entre 'Gasto', 'Ingreso', 'Me Deben' (saldo a cobrar) y 'Debo' (saldo por pagar).
 - Responde de forma natural, directa, concisa y útil basándote ÚNICAMENTE en estos datos.
 """
             
@@ -150,6 +151,10 @@ INSTRUCCIONES DE RESPUESTA:
             amount_val = float(spec.get("numeric_amount") or 0.0)
             if amount_val > 0:
                 reply_lines.append(f"💰 *Importe:* {amount_val} €")
+
+            # Validación de tipo de transacción
+            if spec.get("transaction_type"):
+                reply_lines.append(f"💳 *Tipo Transacción:* `{spec.get('transaction_type')}`")
 
             # Validación de entidades
             entities = meta.get("entities")

@@ -15,7 +15,7 @@ NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 notion = NotionClient(auth=NOTION_API_KEY)
 
 def save_to_notion(data: dict):
-    """Guarda los datos estructurados en la tabla de Notion gestionando todas las columnas."""
+    """Guarda los datos estructurados en Notion integrando Transaction Type."""
     metadata = data.get("general_metadata", {})
     specific = data.get("specific_data", {})
 
@@ -25,7 +25,7 @@ def save_to_notion(data: dict):
     tags = [t.replace("#", "").strip() for t in metadata.get("tags", []) if isinstance(t, str) and t.strip()]
     amount = float(specific.get("numeric_amount") or 0.0)
 
-    # 1. Fecha de registro (Date en zona horaria Europe/Madrid)
+    # 1. Fecha de registro (Europe/Madrid)
     date_val = specific.get("detected_date")
     if not date_val or str(date_val).lower() == "null":
         tz_madrid = ZoneInfo("Europe/Madrid")
@@ -40,19 +40,24 @@ def save_to_notion(data: dict):
         "Summary": {"rich_text": [{"text": {"content": summary[:2000]}}]}
     }
 
-    # 2. Entidades (Entities)
+    # 2. Tipado de Transacción (Transaction Type)
+    tx_type = specific.get("transaction_type")
+    if tx_type and tx_type in ["Gasto", "Ingreso", "Me Deben", "Debo"]:
+        properties["Transaction Type"] = {"select": {"name": tx_type}}
+
+    # 3. Entidades (Entities)
     entities = metadata.get("entities", [])
     if entities and isinstance(entities, list):
         clean_entities = [e.strip()[:100] for e in entities if isinstance(e, str) and e.strip()]
         if clean_entities:
             properties["Entities"] = {"multi_select": [{"name": e} for e in clean_entities]}
 
-    # 3. Estado (Status)
+    # 4. Estado (Status)
     status_val = specific.get("status")
     if status_val and status_val in ["Pendiente", "Completado", "Cancelado"]:
         properties["Status"] = {"select": {"name": status_val}}
 
-    # 4. Fecha de Acción (Action Date)
+    # 5. Fecha de Acción (Action Date)
     action_date_val = specific.get("action_date")
     if action_date_val and str(action_date_val).lower() != "null":
         properties["Action Date"] = {"date": {"start": str(action_date_val)}}
@@ -94,10 +99,10 @@ def save_to_notion(data: dict):
     )
 
 def _build_notion_filter(query_filters: dict = None, category_fallback: str = None):
-    """Construye el árbol de filtros dinámico compatible con la API de Notion."""
+    """Construye el árbol de filtros combinados para la API de Notion."""
     and_conditions = []
     
-    # 1. Filtro por Categoría
+    # Filtro Categoría
     cat = None
     if query_filters and query_filters.get("category"):
         cat = query_filters.get("category")
@@ -111,8 +116,16 @@ def _build_notion_filter(query_filters: dict = None, category_fallback: str = No
             "select": {"equals": cat}
         })
 
-    # 2. Filtro por Entidades (multi_select contains)
     if query_filters:
+        # Filtro Transaction Type
+        tx_type = query_filters.get("transaction_type")
+        if tx_type in ["Gasto", "Ingreso", "Me Deben", "Debo"]:
+            and_conditions.append({
+                "property": "Transaction Type",
+                "select": {"equals": tx_type}
+            })
+
+        # Filtro Entidades
         entities = query_filters.get("entities", [])
         if entities and isinstance(entities, list):
             for ent in entities:
@@ -122,7 +135,7 @@ def _build_notion_filter(query_filters: dict = None, category_fallback: str = No
                         "multi_select": {"contains": ent.strip()}
                     })
 
-        # 3. Filtro por Estado
+        # Filtro Estado
         status = query_filters.get("status")
         if status in ["Pendiente", "Completado", "Cancelado"]:
             and_conditions.append({
@@ -130,7 +143,7 @@ def _build_notion_filter(query_filters: dict = None, category_fallback: str = No
                 "select": {"equals": status}
             })
 
-        # 4. Filtro por Rango Temporal
+        # Filtros Fechas
         date_start = query_filters.get("date_start")
         if date_start and str(date_start).lower() != "null":
             and_conditions.append({
@@ -152,9 +165,7 @@ def _build_notion_filter(query_filters: dict = None, category_fallback: str = No
     return None
 
 def query_notion_db(query_filters: dict = None, category_filter: str = None, max_records: int = 50):
-    """
-    Busca registros en Notion aplicando filtros dinámicos y paginación con orden cronológico.
-    """
+    """Consulta Notion con paginación automática y extracción de Transaction Type."""
     url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
     
     headers = {
@@ -170,7 +181,6 @@ def query_notion_db(query_filters: dict = None, category_filter: str = None, max
     start_cursor = None
 
     try:
-        # Bucle con paginación automática
         while has_more and len(raw_pages) < max_records:
             page_size = min(50, max_records - len(raw_pages))
             payload = {
@@ -192,9 +202,9 @@ def query_notion_db(query_filters: dict = None, category_filter: str = None, max
             has_more = data.get("has_more", False)
             start_cursor = data.get("next_cursor")
 
-        # Fallback de seguridad: si un filtro específico devolvió 0 resultados, busca registros recientes
+        # Fallback de recuperación amplia si el filtro no arrojó resultados
         if not raw_pages and filter_obj is not None:
-            logger.info("Filtro específico sin resultados. Ejecutando consulta de recuperación amplia...")
+            logger.info("Filtro específico sin coincidencias. Ejecutando consulta amplia de recuperación...")
             fallback_payload = {
                 "page_size": 15,
                 "sorts": [{"property": "Date", "direction": "descending"}]
@@ -206,7 +216,7 @@ def query_notion_db(query_filters: dict = None, category_filter: str = None, max
             fallback_res.raise_for_status()
             raw_pages = fallback_res.json().get("results", [])
 
-        # Formatear registros en orden cronológico (los más antiguos primero para que la IA siga el historial)
+        # Formateo cronológico (antiguos primero -> recientes al final)
         formatted_results = []
         for page in reversed(raw_pages):
             props = page.get("properties", {})
@@ -236,6 +246,10 @@ def query_notion_db(query_filters: dict = None, category_filter: str = None, max
             if amount > 0:
                 record_text += f" | Importe: {amount}€"
                 
+            tx_type_obj = props.get("Transaction Type", {}).get("select")
+            if tx_type_obj and tx_type_obj.get("name"):
+                record_text += f" | Tipo Transacción: {tx_type_obj.get('name')}"
+                
             entities_list = props.get("Entities", {}).get("multi_select", [])
             if entities_list:
                 ent_names = [e.get("name") for e in entities_list if e.get("name")]
@@ -255,7 +269,7 @@ def query_notion_db(query_filters: dict = None, category_filter: str = None, max
         return formatted_results
 
     except Exception as e:
-        logger.error(f"Error crítico conectando directo a Notion: {e}")
+        logger.error(f"Error crítico conectando a Notion: {e}")
         if hasattr(e, 'response') and e.response is not None:
             return [f"ERROR_NOTION_API: {e.response.text}"]
         return [f"ERROR_NOTION_API: {str(e)}"]
