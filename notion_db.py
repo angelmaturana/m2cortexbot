@@ -93,8 +93,68 @@ def save_to_notion(data: dict):
         children=children
     )
 
-def query_notion_db(category_filter=None, limit=10):
-    """Busca los últimos registros en Notion y formatea todos sus atributos."""
+def _build_notion_filter(query_filters: dict = None, category_fallback: str = None):
+    """Construye el árbol de filtros dinámico compatible con la API de Notion."""
+    and_conditions = []
+    
+    # 1. Filtro por Categoría
+    cat = None
+    if query_filters and query_filters.get("category"):
+        cat = query_filters.get("category")
+    elif category_fallback and category_fallback != "KNOWLEDGE":
+        cat = category_fallback
+        
+    valid_categories = ["FINANCE", "HEALTH", "KNOWLEDGE", "INVENTORY", "DIARY", "CRM"]
+    if cat in valid_categories and cat != "KNOWLEDGE":
+        and_conditions.append({
+            "property": "Category",
+            "select": {"equals": cat}
+        })
+
+    # 2. Filtro por Entidades (multi_select contains)
+    if query_filters:
+        entities = query_filters.get("entities", [])
+        if entities and isinstance(entities, list):
+            for ent in entities:
+                if isinstance(ent, str) and ent.strip():
+                    and_conditions.append({
+                        "property": "Entities",
+                        "multi_select": {"contains": ent.strip()}
+                    })
+
+        # 3. Filtro por Estado
+        status = query_filters.get("status")
+        if status in ["Pendiente", "Completado", "Cancelado"]:
+            and_conditions.append({
+                "property": "Status",
+                "select": {"equals": status}
+            })
+
+        # 4. Filtro por Rango Temporal
+        date_start = query_filters.get("date_start")
+        if date_start and str(date_start).lower() != "null":
+            and_conditions.append({
+                "property": "Date",
+                "date": {"on_or_after": str(date_start)}
+            })
+
+        date_end = query_filters.get("date_end")
+        if date_end and str(date_end).lower() != "null":
+            and_conditions.append({
+                "property": "Date",
+                "date": {"on_or_before": str(date_end)}
+            })
+
+    if len(and_conditions) == 1:
+        return and_conditions[0]
+    elif len(and_conditions) > 1:
+        return {"and": and_conditions}
+    return None
+
+def query_notion_db(query_filters: dict = None, category_filter: str = None, max_records: int = 50):
+    """
+    Busca registros en Notion aplicando filtros dinámicos y paginación con orden cronológico.
+    """
     url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
     
     headers = {
@@ -103,24 +163,52 @@ def query_notion_db(category_filter=None, limit=10):
         "Content-Type": "application/json"
     }
     
-    payload = {
-        "page_size": limit
-    }
+    filter_obj = _build_notion_filter(query_filters, category_filter)
     
-    valid_categories = ["FINANCE", "HEALTH", "KNOWLEDGE", "INVENTORY", "DIARY", "CRM"]
-    if category_filter in valid_categories and category_filter != "KNOWLEDGE":
-        payload["filter"] = {
-            "property": "Category",
-            "select": {"equals": category_filter}
-        }
-        
+    raw_pages = []
+    has_more = True
+    start_cursor = None
+
     try:
-        response = requests.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        
-        results = []
-        for page in data.get("results", []):
+        # Bucle con paginación automática
+        while has_more and len(raw_pages) < max_records:
+            page_size = min(50, max_records - len(raw_pages))
+            payload = {
+                "page_size": page_size,
+                "sorts": [{"property": "Date", "direction": "descending"}]
+            }
+            if filter_obj:
+                payload["filter"] = filter_obj
+            if start_cursor:
+                payload["start_cursor"] = start_cursor
+
+            response = requests.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            
+            results = data.get("results", [])
+            raw_pages.extend(results)
+            
+            has_more = data.get("has_more", False)
+            start_cursor = data.get("next_cursor")
+
+        # Fallback de seguridad: si un filtro específico devolvió 0 resultados, busca registros recientes
+        if not raw_pages and filter_obj is not None:
+            logger.info("Filtro específico sin resultados. Ejecutando consulta de recuperación amplia...")
+            fallback_payload = {
+                "page_size": 15,
+                "sorts": [{"property": "Date", "direction": "descending"}]
+            }
+            if category_filter and category_filter != "KNOWLEDGE":
+                fallback_payload["filter"] = {"property": "Category", "select": {"equals": category_filter}}
+                
+            fallback_res = requests.post(url, json=fallback_payload, headers=headers)
+            fallback_res.raise_for_status()
+            raw_pages = fallback_res.json().get("results", [])
+
+        # Formatear registros en orden cronológico (los más antiguos primero para que la IA siga el historial)
+        formatted_results = []
+        for page in reversed(raw_pages):
             props = page.get("properties", {})
             
             try:
@@ -162,9 +250,10 @@ def query_notion_db(category_filter=None, limit=10):
             if action_date_obj and action_date_obj.get("start"):
                 record_text += f" | Fecha de Acción: {action_date_obj.get('start')}"
                 
-            results.append(record_text)
+            formatted_results.append(record_text)
             
-        return results
+        return formatted_results
+
     except Exception as e:
         logger.error(f"Error crítico conectando directo a Notion: {e}")
         if hasattr(e, 'response') and e.response is not None:

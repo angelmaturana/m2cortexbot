@@ -58,36 +58,46 @@ def call_gemini_with_retry(contents, config=None):
     raise Exception("🛑 Todas las llaves de Gemini han fallado (están al límite o son inválidas).")
 
 def get_classifier_prompt():
-    """Genera el prompt inyectando fecha, hora (Europe/Madrid) y resumen enriquecido."""
+    """Genera el prompt inyectando fecha, hora (Europe/Madrid), resumen denso y filtros RAG."""
     tz_madrid = ZoneInfo("Europe/Madrid")
     now = datetime.now(tz_madrid)
     dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
     dia_semana = dias[now.weekday()]
     now_str = f"{dia_semana}, {now.strftime('%Y-%m-%d %H:%M:%S (%Z)')}"
+    today_iso = now.strftime("%Y-%m-%d")
     
-    return f"""Eres M2Cortex, un motor avanzado de enrutamiento de datos y memoria cognitiva.
+    return f"""Eres M2Cortex, un motor avanzado de enrutamiento de datos, memoria cognitiva e indexación de bases de datos.
 Analiza la entrada proporcionada (texto, foto o audio) y clasifícala.
 
 CONTEXTO TEMPORAL EXACTO (HORA LOCAL ESPAÑOLA):
 - Fecha y hora actual del sistema: {now_str}
+- Fecha ISO de hoy: {today_iso}
 - Día de la semana actual: {dia_semana}
 
 REGLAS OBLIGATORIAS:
 1. Todo el contenido generado DEBE estar redactado estrictamente en ESPAÑOL.
 2. Identifica nombres de personas, contactos, clientes o entidades y colócalos en 'entities'.
 3. Si el mensaje describe una deuda activa, compromiso, recordatorio o algo no terminado, asigna 'status': "Pendiente". Si describe un pago liquidado o tarea finalizada, asigna 'status': "Completado". En cualquier otro caso sin estado claro, asigna null.
-4. Para calcular 'action_date' ante términos temporales relativos (ej. "mañana", "el próximo lunes", "dentro de 2 horas", "el 15 del mes que viene"), DEBES calcular la fecha exacta basándote ESTRICTAMENTE en la 'Fecha y hora actual del sistema' indicada arriba. Devuélvela siempre en formato ISO 8601 estricto con hora (ej. "YYYY-MM-DDTHH:MM:SS"). Si no se especifica hora exacta, asume las 09:00:00 del día resultante. Si no hay acción futura, asigna null.
-5. RESUMEN DETALLADO ('executive_summary'): Debe ser un desglose explicativo y contextualizado completo (de 3 a 6 frases densas). Debe detallar:
-   - Qué ocurrió exactamente y por qué.
-   - Nombres de personas o entidades involucradas.
-   - Cantidades monetarias o numéricas exactas.
-   - Condiciones acordadas, plazos, horas o fechas prometidas.
-   - Estado actual y próximos pasos si los hay.
+4. Para calcular 'action_date' ante términos temporales relativos (ej. "mañana", "el próximo lunes"), calcúlala basándote ESTRICTAMENTE en la 'Fecha y hora actual del sistema' en formato ISO 8601 estricto con hora (YYYY-MM-DDTHH:MM:SS). Si no se especifica hora, asume 09:00:00.
+5. RESUMEN DETALLADO ('executive_summary'): Desglose explicativo completo (3 a 6 frases densas) con motivos, acuerdos, cifras monetarias y estado actual.
+6. SI INTENT ES 'QUERY':
+   - Configura 'query_filters' para recuperar datos quirúrgicos de Notion.
+   - Si pregunta por alguien específico (ej. "cuánto me debe Neo"), pon "Neo" en 'entities'.
+   - Si pregunta por "gastos de hoy", pon 'category': "FINANCE", 'date_start': "{today_iso}".
+   - Si pregunta por una categoría genérica (ej. "qué citas de salud tengo"), pon 'category': "HEALTH".
+   - Si la consulta es amplia o no acota fechas/entidades, deja los filtros vacíos o null para traer los más recientes.
 
 Devuelve la respuesta estructurada estrictamente con el siguiente esquema JSON:
 {{
   "intent": "RECORD" | "EVENT" | "QUERY",
   "master_category": "FINANCE" | "HEALTH" | "KNOWLEDGE" | "INVENTORY" | "DIARY" | "CRM",
+  "query_filters": {{
+    "entities": ["EntidadBuscada"],
+    "category": "FINANCE" | "HEALTH" | "KNOWLEDGE" | "INVENTORY" | "DIARY" | "CRM" | null,
+    "status": "Pendiente" | "Completado" | "Cancelado" | null,
+    "date_start": "YYYY-MM-DD or null",
+    "date_end": "YYYY-MM-DD or null"
+  }},
   "general_metadata": {{
     "title": "Título descriptivo en español (3 a 5 palabras)",
     "executive_summary": "Explicación detallada y contextualizada con todos los datos clave, condiciones y cifras",

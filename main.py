@@ -79,7 +79,7 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             if user_message.caption:
                 contents.append(f"Contexto añadido: {user_message.caption}")
 
-        # 1ª Llamada a Gemini con fecha/hora actual inyectada
+        # 1ª Llamada a Gemini con prompt enriquecido
         json_config = types.GenerateContentConfig(
             system_instruction=cortex_ai.get_classifier_prompt(),
             response_mime_type="application/json",
@@ -94,7 +94,14 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             await context.bot.send_message(chat_id=chat_id, text="🔎 Buscando en tus memorias de Notion...")
             
             category = parsed_json.get("master_category")
-            recent_records = notion_db.query_notion_db(category_filter=category)
+            query_filters = parsed_json.get("query_filters")
+            
+            # Consulta con filtros dinámicos y paginación
+            recent_records = notion_db.query_notion_db(
+                query_filters=query_filters,
+                category_filter=category,
+                max_records=50
+            )
             
             if recent_records and recent_records[0].startswith("ERROR_NOTION_API:"):
                 error_msg = recent_records[0]
@@ -102,19 +109,23 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
                 return
 
             if not recent_records:
-                await context.bot.send_message(chat_id=chat_id, text="No he encontrado recuerdos relacionados recientes.")
+                await context.bot.send_message(chat_id=chat_id, text="No he encontrado recuerdos relacionados.")
                 return
                 
             records_text = "\n".join(recent_records)
             tz_madrid = ZoneInfo("Europe/Madrid")
             now_str = datetime.now(tz_madrid).strftime("%Y-%m-%d %H:%M:%S (%Z)")
+            
             rag_prompt = f"""
 Fecha y hora actual en España: {now_str}
-El usuario te ha hecho una pregunta. Aquí tienes sus registros más recientes extraídos de Notion:
+El usuario te ha hecho una pregunta. Aquí tienes el historial cronológico extraído de Notion:
 
 {records_text}
 
-Responde a su pregunta de forma conversacional y útil basándote ÚNICAMENTE en estos datos y teniendo en cuenta la fecha y hora actual en España. Sé directo y natural.
+INSTRUCCIONES DE RESPUESTA:
+- Los registros están ordenados cronológicamente (los eventos más recientes aparecen al final).
+- Si hay varios eventos sobre un mismo asunto o persona (ej. deudas o llamadas), los registros más recientes actualizan y prevalecen sobre los anteriores.
+- Responde de forma natural, directa, concisa y útil basándote ÚNICAMENTE en estos datos.
 """
             
             # 2ª Llamada a Gemini para RAG
