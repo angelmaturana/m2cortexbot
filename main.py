@@ -37,7 +37,6 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"M2Cortex Brain Router is Running 24/7.")
 
     def log_message(self, format, *args):
-        # Silencia el registro de peticiones HTTP periódicas en los logs
         return
 
 def start_health_server():
@@ -63,7 +62,6 @@ def keep_alive_worker():
         except Exception as e:
             logger.warning(f"⚠️ Fluctuación temporal en Keep-Alive Ping: {e}")
 
-        # Espera 10 minutos (600s)
         time.sleep(600)
 
 async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -78,7 +76,7 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
     contents = []
 
     try:
-        # 1. Texto
+        # 1. Texto plano
         if user_message.text:
             contents.append(f"Input de usuario: {user_message.text}")
 
@@ -104,7 +102,7 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             if user_message.caption:
                 contents.append(f"Contexto añadido: {user_message.caption}")
 
-        # 4. Vídeos y Notas de Vídeo circulares
+        # 4. Vídeos y Vídeos circulares (video_note)
         elif user_message.video or user_message.video_note:
             video_obj = user_message.video or user_message.video_note
             video_file = await video_obj.get_file()
@@ -116,7 +114,7 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             if user_message.caption:
                 contents.append(f"Contexto añadido: {user_message.caption}")
 
-        # 5. Documentos adjuntos
+        # 5. Archivos / Documentos adjuntos
         elif user_message.document:
             doc_obj = user_message.document
             doc_file = await doc_obj.get_file()
@@ -128,7 +126,7 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             if user_message.caption:
                 contents.append(f"Contexto añadido: {user_message.caption}")
 
-        # Guardia defensiva: evitar llamar a Gemini si no hay partes de contenido
+        # Guardia defensiva: evitar llamar a Gemini si el mensaje no trajo contenido soportado
         if not contents:
             await context.bot.send_message(
                 chat_id=chat_id,
@@ -235,15 +233,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 M2Cortex activo. Envíame datos para guardar o pregúntame por tus recuerdos.")
 
 def main():
-    # 1. Iniciar servidor HTTP en segundo plano
+    # 1. Servidor Web de salud para Render
     web_thread = threading.Thread(target=start_health_server, daemon=True)
     web_thread.start()
 
-    # 2. Iniciar Worker Keep-Alive en segundo plano
+    # 2. Worker Keep-Alive 24/7
     ping_thread = threading.Thread(target=keep_alive_worker, daemon=True)
     ping_thread.start()
 
-    # 3. Iniciar Bot de Telegram
+    # 3. Arranque del bot de Telegram
     logger.info("🚀 Iniciando M2Cortex Engine Modularizado...")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))

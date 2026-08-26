@@ -32,7 +32,6 @@ def save_to_notion(data: dict):
     if not date_val or str(date_val).lower() == "null":
         date_val = datetime.now(tz_madrid).isoformat()
     elif len(str(date_val)) == 10 and "T" not in str(date_val):
-        # Si llega como "YYYY-MM-DD", se le anexa la hora exacta actual para no perder el timestamp
         current_time = datetime.now(tz_madrid).strftime("%H:%M:%S")
         date_val = f"{date_val}T{current_time}"
 
@@ -76,7 +75,7 @@ def save_to_notion(data: dict):
         {
             "object": "block",
             "type": "paragraph",
-            "paragraph": {"rich_text": [{"type": "text", "text": {"content": data.get("raw_context", "Sin contexto adicional.")}}]}
+            "paragraph": {"rich_text": [{"type": "text", "text": data.get("raw_context", "Sin contexto adicional.")}}]}
         }
     ]
 
@@ -92,7 +91,7 @@ def save_to_notion(data: dict):
                 "object": "block",
                 "type": "to_do",
                 "to_do": {
-                    "rich_text": [{"type": "text", "text": {"content": str(task)}}],
+                    "rich_text": [{"type": "text", "text": str(task)}],
                     "checked": False
                 }
             })
@@ -107,7 +106,6 @@ def _build_notion_filter(query_filters: dict = None, category_fallback: str = No
     """Construye el árbol de filtros combinados para la API de Notion."""
     and_conditions = []
     
-    # Filtro Categoría
     cat = None
     if query_filters and query_filters.get("category"):
         cat = query_filters.get("category")
@@ -122,7 +120,6 @@ def _build_notion_filter(query_filters: dict = None, category_fallback: str = No
         })
 
     if query_filters:
-        # Filtro Transaction Type
         tx_type = query_filters.get("transaction_type")
         if tx_type in ["Gasto", "Ingreso", "Me Deben", "Debo"]:
             and_conditions.append({
@@ -130,7 +127,6 @@ def _build_notion_filter(query_filters: dict = None, category_fallback: str = No
                 "select": {"equals": tx_type}
             })
 
-        # Filtro Entidades
         entities = query_filters.get("entities", [])
         if entities and isinstance(entities, list):
             for ent in entities:
@@ -140,7 +136,6 @@ def _build_notion_filter(query_filters: dict = None, category_fallback: str = No
                         "multi_select": {"contains": ent.strip()}
                     })
 
-        # Filtro Estado
         status = query_filters.get("status")
         if status in ["Pendiente", "Completado", "Cancelado"]:
             and_conditions.append({
@@ -148,7 +143,6 @@ def _build_notion_filter(query_filters: dict = None, category_fallback: str = No
                 "select": {"equals": status}
             })
 
-        # Filtros Fechas
         date_start = query_filters.get("date_start")
         if date_start and str(date_start).lower() != "null":
             and_conditions.append({
@@ -207,7 +201,6 @@ def query_notion_db(query_filters: dict = None, category_filter: str = None, max
             has_more = data.get("has_more", False)
             start_cursor = data.get("next_cursor")
 
-        # Fallback de recuperación amplia si el filtro no arrojó resultados
         if not raw_pages and filter_obj is not None:
             logger.info("Filtro específico sin coincidencias. Ejecutando consulta amplia de recuperación...")
             fallback_payload = {
@@ -221,7 +214,6 @@ def query_notion_db(query_filters: dict = None, category_filter: str = None, max
             fallback_res.raise_for_status()
             raw_pages = fallback_res.json().get("results", [])
 
-        # Formateo cronológico (antiguos primero -> recientes al final)
         formatted_results = []
         for page in reversed(raw_pages):
             props = page.get("properties", {})

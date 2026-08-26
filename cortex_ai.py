@@ -32,13 +32,13 @@ def rotate_key():
     logger.warning(f"🔄 Rotando a la API Key de Gemini: Llave {CURRENT_KEY_INDEX + 1} de {len(API_KEYS)}")
 
 def call_gemini_with_retry(contents, config=None):
-    """Envuelve la llamada a Gemini. Si salta límite o error de clave, rota y reintenta."""
+    """Envuelve la llamada a Gemini 3.6 Flash con rotación automática de llaves."""
     max_retries = len(API_KEYS)
     
     for attempt in range(max_retries):
         try:
             client = get_gemini_client()
-            chat = client.chats.create(model="gemini-2.5-flash", config=config)
+            chat = client.chats.create(model="gemini-3.6-flash", config=config)
             response = chat.send_message(contents)
             return response
         except Exception as e:
@@ -58,7 +58,7 @@ def call_gemini_with_retry(contents, config=None):
     raise Exception("🛑 Todas las llaves de Gemini han fallado (están al límite o son inválidas).")
 
 def get_classifier_prompt():
-    """Genera el prompt inyectando fecha, tipado de transacción y filtros RAG."""
+    """Genera el prompt inyectando fecha, tipado de transacción, filtros RAG y soporte multimodal."""
     tz_madrid = ZoneInfo("Europe/Madrid")
     now = datetime.now(tz_madrid)
     dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
