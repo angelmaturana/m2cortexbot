@@ -3,6 +3,8 @@ import json
 import logging
 import os
 import threading
+import time
+import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -26,7 +28,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 import cortex_ai
 import notion_db
 
-# 2. Servidor HTTP de Keep-Alive para Render
+# 2. Servidor HTTP de Health Check para Render
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -35,6 +37,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"M2Cortex Brain Router is Running 24/7.")
 
     def log_message(self, format, *args):
+        # Silencia el spam de peticiones HTTP en los logs de Render
         return
 
 def start_health_server():
@@ -42,6 +45,26 @@ def start_health_server():
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     logger.info(f"🌐 Servidor Web de salud activo en puerto {port}")
     server.serve_forever()
+
+# 3. Worker Autónomo Keep-Alive (Evita suspensión en Render)
+def keep_alive_worker():
+    """Envía un ping periódico cada 10 minutos a la URL pública de Render."""
+    time.sleep(30)  # Pausa inicial para arranque completo del contenedor
+    target_url = os.getenv("RENDER_EXTERNAL_URL", "https://m2cortexbot.onrender.com")
+    logger.info(f"💓 Keep-Alive Engine iniciado apuntando a: {target_url}")
+
+    while True:
+        try:
+            res = requests.get(target_url, timeout=10)
+            if res.status_code == 200:
+                logger.info("💓 Keep-Alive Ping exitoso (200 OK) -> Servidor activo 24/7")
+            else:
+                logger.warning(f"⚠️ Keep-Alive respondió código {res.status_code}")
+        except Exception as e:
+            logger.warning(f"⚠️ Fluctuación temporal en Keep-Alive Ping: {e}")
+
+        # Espera 10 minutos (600s). Render suspende tras 15 min de inactividad
+        time.sleep(600)
 
 async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -184,9 +207,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 M2Cortex activo. Envíame datos para guardar o pregúntame por tus recuerdos.")
 
 def main():
+    # 1. Iniciar servidor HTTP en segundo plano
     web_thread = threading.Thread(target=start_health_server, daemon=True)
     web_thread.start()
 
+    # 2. Iniciar Worker Keep-Alive en segundo plano
+    ping_thread = threading.Thread(target=keep_alive_worker, daemon=True)
+    ping_thread.start()
+
+    # 3. Iniciar Bot de Telegram
     logger.info("🚀 Iniciando M2Cortex Engine Modularizado...")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
