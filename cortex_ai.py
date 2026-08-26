@@ -9,9 +9,16 @@ from google.genai import types
 load_dotenv()
 logger = logging.getLogger("M2Cortex")
 
-# --- SISTEMA DE ROTACIÓN DE LLAVES GEMINI ---
+# --- SISTEMA DE ROTACIÓN DE 6 LLAVES GEMINI ---
 API_KEYS = []
-for key_name in ["GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3", "GEMINI_API_KEY_4"]:
+for key_name in [
+    "GEMINI_API_KEY",
+    "GEMINI_API_KEY_2",
+    "GEMINI_API_KEY_3",
+    "GEMINI_API_KEY_4",
+    "GEMINI_API_KEY_5",
+    "GEMINI_API_KEY_6"
+]:
     val = os.getenv(key_name)
     if val and val.strip():
         API_KEYS.append(val.strip())
