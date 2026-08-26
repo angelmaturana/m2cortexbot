@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import threading
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from dotenv import load_dotenv
 
@@ -17,7 +18,7 @@ logger = logging.getLogger("M2Cortex")
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# Importar los submódulos (IA y Base de Datos)
+# Importar submódulos
 from google.genai import types
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
@@ -77,9 +78,9 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             if user_message.caption:
                 contents.append(f"Contexto añadido: {user_message.caption}")
 
-        # 1ª Llamada a Gemini usando el módulo cortex_ai
+        # 1ª Llamada a Gemini con fecha/hora actual inyectada
         json_config = types.GenerateContentConfig(
-            system_instruction=cortex_ai.PROMPT_CLASSIFIER,
+            system_instruction=cortex_ai.get_classifier_prompt(),
             response_mime_type="application/json",
             temperature=0.1,
         )
@@ -104,12 +105,14 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
                 return
                 
             records_text = "\n".join(recent_records)
+            now_str = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
             rag_prompt = f"""
+            Fecha actual del sistema: {now_str}
             El usuario te ha hecho una pregunta. Aquí tienes sus registros más recientes extraídos de Notion:
             
             {records_text}
             
-            Responde a su pregunta de forma conversacional y útil basándote ÚNICAMENTE en estos datos. Sé directo y natural.
+            Responde a su pregunta de forma conversacional y útil basándote ÚNICAMENTE en estos datos y teniendo en cuenta la fecha actual. Sé directo y natural.
             """
             
             # 2ª Llamada a Gemini para RAG
@@ -130,12 +133,12 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
                 f"📝 *Resumen:* {meta.get('executive_summary')}"
             ]
 
-            # Conversión segura del importe numérico contra valores None o null
+            # Conversión segura de importe numérico
             amount_val = float(spec.get("numeric_amount") or 0.0)
             if amount_val > 0:
                 reply_lines.append(f"💰 *Importe:* {amount_val} €")
 
-            # Validación segura de entidades (lista no vacía)
+            # Validación de entidades
             entities = meta.get("entities")
             if entities and isinstance(entities, list) and len(entities) > 0:
                 reply_lines.append(f"👤 *Entidades:* {', '.join(entities)}")

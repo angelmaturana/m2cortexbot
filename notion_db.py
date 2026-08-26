@@ -14,7 +14,7 @@ NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 notion = NotionClient(auth=NOTION_API_KEY)
 
 def save_to_notion(data: dict):
-    """Guarda los datos estructurados en la tabla de Notion gestionando las nuevas columnas."""
+    """Guarda los datos estructurados en la tabla de Notion gestionando todas las columnas."""
     metadata = data.get("general_metadata", {})
     specific = data.get("specific_data", {})
 
@@ -26,13 +26,13 @@ def save_to_notion(data: dict):
 
     # 1. Fecha de registro (Date)
     date_val = specific.get("detected_date")
-    if not date_val or date_val.lower() == "null":
+    if not date_val or str(date_val).lower() == "null":
         date_val = datetime.now().astimezone().isoformat()
 
     properties = {
         "Name": {"title": [{"text": {"content": title[:100]}}]},
         "Category": {"select": {"name": category}},
-        "Date": {"date": {"start": date_val}},
+        "Date": {"date": {"start": str(date_val)}},
         "Amount": {"number": amount},
         "Tags": {"multi_select": [{"name": tag[:100]} for tag in tags]},
         "Summary": {"rich_text": [{"text": {"content": summary[:2000]}}]}
@@ -40,8 +40,8 @@ def save_to_notion(data: dict):
 
     # 2. Entidades (Entities)
     entities = metadata.get("entities", [])
-    if entities:
-        clean_entities = [e.strip()[:100] for e in entities if e.strip()]
+    if entities and isinstance(entities, list):
+        clean_entities = [e.strip()[:100] for e in entities if isinstance(e, str) and e.strip()]
         if clean_entities:
             properties["Entities"] = {"multi_select": [{"name": e} for e in clean_entities]}
 
@@ -53,7 +53,7 @@ def save_to_notion(data: dict):
     # 4. Fecha de Acción (Action Date)
     action_date_val = specific.get("action_date")
     if action_date_val and str(action_date_val).lower() != "null":
-        properties["Action Date"] = {"date": {"start": action_date_val}}
+        properties["Action Date"] = {"date": {"start": str(action_date_val)}}
 
     children = [
         {
@@ -80,7 +80,7 @@ def save_to_notion(data: dict):
                 "object": "block",
                 "type": "to_do",
                 "to_do": {
-                    "rich_text": [{"type": "text", "text": {"content": task}}],
+                    "rich_text": [{"type": "text", "text": {"content": str(task)}}],
                     "checked": False
                 }
             })
@@ -92,7 +92,7 @@ def save_to_notion(data: dict):
     )
 
 def query_notion_db(category_filter=None, limit=10):
-    """Busca los últimos registros en Notion comunicándose directamente con la API HTTP."""
+    """Busca los últimos registros en Notion y formatea todos sus atributos."""
     url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
     
     headers = {
@@ -144,7 +144,22 @@ def query_notion_db(category_filter=None, limit=10):
             
             record_text = f"- [{date_str}] {title}: {summary}"
             if amount > 0:
-                record_text += f" (Importe: {amount}€)"
+                record_text += f" | Importe: {amount}€"
+                
+            entities_list = props.get("Entities", {}).get("multi_select", [])
+            if entities_list:
+                ent_names = [e.get("name") for e in entities_list if e.get("name")]
+                if ent_names:
+                    record_text += f" | Entidades: {', '.join(ent_names)}"
+                    
+            status_obj = props.get("Status", {}).get("select")
+            if status_obj and status_obj.get("name"):
+                record_text += f" | Estado: {status_obj.get('name')}"
+                
+            action_date_obj = props.get("Action Date", {}).get("date")
+            if action_date_obj and action_date_obj.get("start"):
+                record_text += f" | Fecha de Acción: {action_date_obj.get('start')}"
+                
             results.append(record_text)
             
         return results

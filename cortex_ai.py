@@ -1,5 +1,6 @@
 import logging
 import os
+from datetime import datetime
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -55,35 +56,43 @@ def call_gemini_with_retry(contents, config=None):
                 
     raise Exception("🛑 Todas las llaves de Gemini han fallado (están al límite o son inválidas).")
 
-# --- PROMPT MAESTRO DE CLASIFICACIÓN (FASE 3.5) ---
-PROMPT_CLASSIFIER = """
-Eres M2Cortex, un motor avanzado de enrutamiento de datos y memoria cognitiva.
+def get_classifier_prompt():
+    """Genera el prompt inyectando fecha, hora y día de la semana actual."""
+    now = datetime.now().astimezone()
+    dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+    dia_semana = dias[now.weekday()]
+    now_str = f"{dia_semana}, {now.strftime('%Y-%m-%d %H:%M:%S (UTC%z)')}"
+    
+    return f"""Eres M2Cortex, un motor avanzado de enrutamiento de datos y memoria cognitiva.
 Analiza la entrada proporcionada (texto, foto o audio) y clasifícala.
+
+CONTEXTO TEMPORAL EXACTO:
+- Fecha y hora actual del sistema: {now_str}
+- Día de la semana actual: {dia_semana}
 
 REGLAS OBLIGATORIAS:
 1. Todo el contenido generado DEBE estar redactado estrictamente en ESPAÑOL.
 2. Identifica nombres de personas, contactos, clientes o entidades y colócalos en 'entities'.
 3. Si el mensaje describe una deuda activa, compromiso, recordatorio o algo no terminado, asigna 'status': "Pendiente". Si describe un pago liquidado o tarea finalizada, asigna 'status': "Completado". En cualquier otro caso sin estado claro, asigna null.
-4. Si el mensaje especifica una fecha u hora futura para una acción/alarma (ej. "mañana a las 10", "el viernes"), calcúlala y asígnala en formato ISO 8601 en 'action_date'.
+4. Para calcular 'action_date' ante términos temporales relativos (ej. "mañana", "el próximo lunes", "dentro de 2 horas", "el 15 del mes que viene"), DEBES calcular la fecha exacta basándote ESTRICTAMENTE en la 'Fecha y hora actual del sistema' indicada arriba. Devuélvela siempre en formato ISO 8601 estricto (ej. "YYYY-MM-DDTHH:MM:SS"). Si no se especifica hora exacta, asume las 09:00:00 del día resultante. Si no hay acción futura, asigna null.
 
 Devuelve la respuesta estructurada estrictamente con el siguiente esquema JSON:
-{
+{{
   "intent": "RECORD" | "EVENT" | "QUERY",
   "master_category": "FINANCE" | "HEALTH" | "KNOWLEDGE" | "INVENTORY" | "DIARY" | "CRM",
-  "general_metadata": {
+  "general_metadata": {{
     "title": "Título descriptivo en español (3 a 5 palabras)",
     "executive_summary": "Resumen ejecutivo en español (1 a 2 líneas)",
     "tags": ["Etiqueta1", "Etiqueta2"],
     "entities": ["PersonaOEntidad1", "PersonaOEntidad2"],
     "sentiment": "Positive" | "Neutral" | "Negative"
-  },
-  "specific_data": {
+  }},
+  "specific_data": {{
     "numeric_amount": 0.00,
     "detected_date": "YYYY-MM-DD or null",
     "action_date": "YYYY-MM-DDTHH:MM:SS or null",
     "status": "Pendiente" | "Completado" | "Cancelado" | null,
     "hidden_tasks": ["Tarea detectada en español"]
-  },
+  }},
   "raw_context": "Transcripción completa o descripción visual detallada en español de lo observado"
-}
-"""
+}}"""
