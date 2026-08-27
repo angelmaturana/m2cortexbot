@@ -68,7 +68,7 @@ def call_gemini_with_retry(contents, config=None):
     raise Exception("🛑 Todas las llaves de Gemini están temporalmente saturadas. Espera unos segundos.")
 
 def get_classifier_prompt():
-    """Prompt multimodal con reglas para Eventos, Fechas de fin y Ubicación."""
+    """Prompt multimodal con reglas estrictas de extracción de filtros y fechas."""
     tz_madrid = ZoneInfo("Europe/Madrid")
     now = datetime.now(tz_madrid)
     dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
@@ -87,44 +87,48 @@ CONTEXTO TEMPORAL EXACTO (HORA LOCAL ESPAÑOLA):
 REGLAS OBLIGATORIAS:
 1. INTENT: 
    - Usa "EVENT" estrictamente si el mensaje describe una cita, reunión, viaje o evento programable en calendario.
-   - Usa "QUERY" si el usuario hace una pregunta sobre su historial de Notion o pide calcular datos.
-   - Usa "RECORD" para guardar gastos, notas, deudas o información general.
-2. Identifica nombres de personas o entidades en 'entities'.
+   - Usa "QUERY" si el usuario hace una pregunta sobre su historial de Notion o pide recordar datos/matrículas/nombres.
+   - Usa "RECORD" para guardar inventario, gastos, notas, deudas o información general.
+2. Identifica nombres de personas, objetos clave (ej. "coche", "matrícula") o entidades en 'entities'.
 3. TIPADO FINANCIERO ('transaction_type'): "Gasto", "Ingreso", "Me Deben", "Debo" o null.
 4. FECHAS (Formato estricto YYYY-MM-DDTHH:MM:SS):
    - 'action_date': Fecha y hora de inicio de la alarma, evento o compromiso futuro. Asume 09:00 si no hay hora específica.
-   - 'action_date_end': Fecha y hora de finalización del evento. Si se intuye duración (ej. "de 10 a 12" o "durante 2 horas"), calcúlala en base al inicio. Si no hay fin claro, asigna null.
-5. UBICACIÓN ('location'): Si se menciona un lugar, calle, local o ciudad para un evento/nota, extráelo aquí. Si no, null.
-6. RESUMEN: Desglose completo (3 a 6 frases densas) con motivos, cifras y acuerdos.
+   - 'action_date_end': Fecha y hora de finalización del evento.
+5. UBICACIÓN ('location'): Si se menciona un lugar para un evento/nota, extráelo aquí. Si no, null.
+6. RESUMEN: Desglose completo con motivos, cifras y acuerdos.
+7. SI INTENT ES 'QUERY':
+   - Si pregunta por gastos de hoy: pon 'category': "FINANCE", 'transaction_type': "Gasto", 'date_start': "{today_iso}".
+   - Si pregunta por un objeto (ej. "matrícula de coche") pon palabras clave en 'entities'.
+   - IMPORTANTE: Si la pregunta NO incluye un marco temporal, asigna SIEMPRE null real a 'date_start' y 'date_end'. No uses cadenas de texto de relleno.
 
 Devuelve la respuesta estructurada estrictamente con el siguiente esquema JSON:
 {{
-  "intent": "RECORD" | "EVENT" | "QUERY",
-  "master_category": "FINANCE" | "HEALTH" | "KNOWLEDGE" | "INVENTORY" | "DIARY" | "CRM",
+  "intent": "RECORD",
+  "master_category": "INVENTORY",
   "query_filters": {{
-    "entities": ["EntidadBuscada"],
-    "category": "FINANCE" | "HEALTH" | "KNOWLEDGE" | "INVENTORY" | "DIARY" | "CRM" | null,
-    "transaction_type": "Gasto" | "Ingreso" | "Me Deben" | "Debo" | null,
-    "status": "Pendiente" | "Completado" | "Cancelado" | null,
-    "date_start": "YYYY-MM-DD or null",
-    "date_end": "YYYY-MM-DD or null"
+    "entities": [],
+    "category": null,
+    "transaction_type": null,
+    "status": null,
+    "date_start": null,
+    "date_end": null
   }},
   "general_metadata": {{
-    "title": "Título descriptivo en español (3 a 5 palabras)",
-    "executive_summary": "Explicación detallada de hasta 1500 caracteres con contexto y acuerdos",
-    "location": "Ubicación detectada o null",
-    "tags": ["Etiqueta1", "Etiqueta2"],
-    "entities": ["PersonaOEntidad1", "PersonaOEntidad2"],
-    "sentiment": "Positive" | "Neutral" | "Negative"
+    "title": "Título descriptivo",
+    "executive_summary": "Resumen detallado",
+    "location": null,
+    "tags": [],
+    "entities": [],
+    "sentiment": "Neutral"
   }},
   "specific_data": {{
     "numeric_amount": 0.00,
-    "transaction_type": "Gasto" | "Ingreso" | "Me Deben" | "Debo" | null,
-    "detected_date": "YYYY-MM-DDTHH:MM:SS or null",
-    "action_date": "YYYY-MM-DDTHH:MM:SS or null",
-    "action_date_end": "YYYY-MM-DDTHH:MM:SS or null",
-    "status": "Pendiente" | "Completado" | "Cancelado" | null,
-    "hidden_tasks": ["Tarea detectada en español"]
+    "transaction_type": null,
+    "detected_date": null,
+    "action_date": null,
+    "action_date_end": null,
+    "status": null,
+    "hidden_tasks": []
   }},
-  "raw_context": "Transcripción completa o descripción detallada en español de lo observado"
+  "raw_context": "Transcripción completa"
 }}"""
