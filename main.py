@@ -20,6 +20,7 @@ logger = logging.getLogger("M2Cortex")
 # 1. Cargar variables de entorno principales
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024  # Límite estricto de Telegram (20 MB)
 
 # Importar submódulos
 from google.genai import types
@@ -45,9 +46,8 @@ def start_health_server():
     logger.info(f"🌐 Servidor Web de salud activo en puerto {port}")
     server.serve_forever()
 
-# 3. Worker Autónomo Keep-Alive (Evita suspensión en Render)
+# 3. Worker Autónomo Keep-Alive
 def keep_alive_worker():
-    """Envía un ping periódico cada 10 minutos a la URL pública de Render."""
     time.sleep(30)
     target_url = os.getenv("RENDER_EXTERNAL_URL", "https://m2cortexbot.onrender.com")
     logger.info(f"💓 Keep-Alive Engine iniciado apuntando a: {target_url}")
@@ -55,14 +55,23 @@ def keep_alive_worker():
     while True:
         try:
             res = requests.get(target_url, timeout=10)
-            if res.status_code == 200:
-                logger.info("💓 Keep-Alive Ping exitoso (200 OK) -> Servidor activo 24/7")
-            else:
+            if res.status_code != 200:
                 logger.warning(f"⚠️ Keep-Alive respondió código {res.status_code}")
         except Exception as e:
-            logger.warning(f"⚠️ Fluctuación temporal en Keep-Alive Ping: {e}")
-
+            pass
         time.sleep(600)
+
+async def check_file_size_safe(file_obj, context, chat_id):
+    """Verifica si el archivo sobrepasa el límite de 20MB de la API gratuita de Telegram."""
+    file_size = getattr(file_obj, "file_size", 0)
+    if file_size and file_size > MAX_FILE_SIZE_BYTES:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ *Archivo demasiado pesado*.\nEl archivo pesa {file_size / (1024*1024):.1f}MB y Telegram permite descargar un máximo de 20MB. Envíalo comprimido o más corto.",
+            parse_mode="Markdown"
+        )
+        return False
+    return True
 
 async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -72,69 +81,51 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
     user_message = update.message
     
     await context.bot.send_message(chat_id=chat_id, text="🧠 Analizando...")
-
     contents = []
 
     try:
-        # 1. Texto plano
+        # EXTRACTOR MULTIMEDIA CON PROTECCIÓN 20MB
         if user_message.text:
             contents.append(f"Input de usuario: {user_message.text}")
 
-        # 2. Imágenes / Fotos
         elif user_message.photo:
             photo_file = await user_message.photo[-1].get_file()
             photo_bytes = await photo_file.download_as_bytearray()
-            contents.append(
-                types.Part.from_bytes(data=bytes(photo_bytes), mime_type="image/jpeg")
-            )
-            if user_message.caption:
-                contents.append(f"Contexto añadido: {user_message.caption}")
+            contents.append(types.Part.from_bytes(data=bytes(photo_bytes), mime_type="image/jpeg"))
+            if user_message.caption: contents.append(f"Contexto: {user_message.caption}")
 
-        # 3. Audios y Notas de Voz
         elif user_message.voice or user_message.audio:
             file_obj = user_message.voice or user_message.audio
+            if not await check_file_size_safe(file_obj, context, chat_id): return
             voice_file = await file_obj.get_file()
             audio_bytes = await voice_file.download_as_bytearray()
             mime_type = file_obj.mime_type or ("audio/ogg" if user_message.voice else "audio/mpeg")
-            contents.append(
-                types.Part.from_bytes(data=bytes(audio_bytes), mime_type=mime_type)
-            )
-            if user_message.caption:
-                contents.append(f"Contexto añadido: {user_message.caption}")
+            contents.append(types.Part.from_bytes(data=bytes(audio_bytes), mime_type=mime_type))
+            if user_message.caption: contents.append(f"Contexto: {user_message.caption}")
 
-        # 4. Vídeos y Notas de Vídeo circulares
         elif user_message.video or user_message.video_note:
             video_obj = user_message.video or user_message.video_note
+            if not await check_file_size_safe(video_obj, context, chat_id): return
             video_file = await video_obj.get_file()
             video_bytes = await video_file.download_as_bytearray()
             mime_type = getattr(video_obj, "mime_type", None) or "video/mp4"
-            contents.append(
-                types.Part.from_bytes(data=bytes(video_bytes), mime_type=mime_type)
-            )
-            if user_message.caption:
-                contents.append(f"Contexto añadido: {user_message.caption}")
+            contents.append(types.Part.from_bytes(data=bytes(video_bytes), mime_type=mime_type))
+            if user_message.caption: contents.append(f"Contexto: {user_message.caption}")
 
-        # 5. Archivos / Documentos adjuntos
         elif user_message.document:
             doc_obj = user_message.document
+            if not await check_file_size_safe(doc_obj, context, chat_id): return
             doc_file = await doc_obj.get_file()
             doc_bytes = await doc_file.download_as_bytearray()
             mime_type = doc_obj.mime_type or "application/octet-stream"
-            contents.append(
-                types.Part.from_bytes(data=bytes(doc_bytes), mime_type=mime_type)
-            )
-            if user_message.caption:
-                contents.append(f"Contexto añadido: {user_message.caption}")
+            contents.append(types.Part.from_bytes(data=bytes(doc_bytes), mime_type=mime_type))
+            if user_message.caption: contents.append(f"Contexto: {user_message.caption}")
 
-        # Guardia defensiva: evitar llamar a Gemini si el mensaje no trajo contenido soportado
         if not contents:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="⚠️ No he detectado contenido procesable (texto, imagen, audio o vídeo)."
-            )
+            await context.bot.send_message(chat_id=chat_id, text="⚠️ No he detectado contenido procesable.")
             return
 
-        # 1ª Llamada a Gemini con prompt enriquecido
+        # 1ª LLAMADA (CLASIFICACIÓN)
         json_config = types.GenerateContentConfig(
             system_instruction=cortex_ai.get_classifier_prompt(),
             response_mime_type="application/json",
@@ -151,15 +142,10 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             category = parsed_json.get("master_category")
             query_filters = parsed_json.get("query_filters")
             
-            recent_records = notion_db.query_notion_db(
-                query_filters=query_filters,
-                category_filter=category,
-                max_records=50
-            )
+            recent_records = notion_db.query_notion_db(query_filters, category, 50)
             
             if recent_records and recent_records[0].startswith("ERROR_NOTION_API:"):
-                error_msg = recent_records[0]
-                await context.bot.send_message(chat_id=chat_id, text=f"⚠️ Ups, error al leer Notion:\n`{error_msg}`", parse_mode="Markdown")
+                await context.bot.send_message(chat_id=chat_id, text=f"⚠️ Error en Notion:\n`{recent_records[0]}`", parse_mode="Markdown")
                 return
 
             if not recent_records:
@@ -170,21 +156,22 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             tz_madrid = ZoneInfo("Europe/Madrid")
             now_str = datetime.now(tz_madrid).strftime("%Y-%m-%d %H:%M:%S (%Z)")
             
+            # 2ª LLAMADA RAG (AHORRO MASIVO DE TOKENS)
+            # En lugar de reenviar el vídeo completo de 20MB, pasamos el resumen analizado en la primera fase
+            user_raw_context = parsed_json.get("raw_context", "Consulta de base de datos.")
+            
             rag_prompt = f"""
-Fecha y hora actual en España: {now_str}
-El usuario te ha hecho una pregunta. Aquí tienes el historial cronológico extraído de Notion:
+Fecha actual España: {now_str}
+El usuario busca información basada en el siguiente análisis de su consulta (texto, audio o vídeo original ya transcrito):
+"{user_raw_context}"
 
+HISTORIAL EXTRAÍDO DE NOTION:
 {records_text}
 
-INSTRUCCIONES DE RESPUESTA:
-- Los registros están ordenados cronológicamente (los eventos más recientes aparecen al final).
-- Si hay varios eventos sobre un mismo asunto o persona (ej. deudas, cobros o citas), los registros más recientes actualizan y prevalecen sobre los anteriores.
-- Distingue claramente entre 'Gasto', 'Ingreso', 'Me Deben' (saldo a cobrar) y 'Debo' (saldo por pagar).
-- Responde de forma natural, directa, concisa y útil basándote ÚNICAMENTE en estos datos.
+INSTRUCCIONES: Responde directamente y con precisión al usuario basándote en los datos de Notion.
 """
-            
-            # 2ª Llamada a Gemini para RAG
-            final_answer = cortex_ai.call_gemini_with_retry([rag_prompt] + contents)
+            # Enviamos solo texto a la 2ª fase, ahorrando un 50% del coste de tokens TPM.
+            final_answer = cortex_ai.call_gemini_with_retry([rag_prompt])
             await context.bot.send_message(chat_id=chat_id, text=f"💡 {final_answer.text}")
 
         else:
@@ -194,30 +181,37 @@ INSTRUCCIONES DE RESPUESTA:
             meta = parsed_json.get("general_metadata", {})
             spec = parsed_json.get("specific_data", {})
 
+            # FORMATO DE RESPUESTA TELEGRAM
+            intent_icon = "📅" if intent == "EVENT" else "✅"
             reply_lines = [
-                "✅ *Registrado en Notion*",
+                f"{intent_icon} *Registrado en Notion*",
                 f"📌 *Título:* {meta.get('title')}",
                 f"🏷️ *Categoría:* `{parsed_json.get('master_category')}`",
                 f"📝 *Resumen:* {meta.get('executive_summary')}"
             ]
 
-            amount_val = float(spec.get("numeric_amount") or 0.0)
-            if amount_val > 0:
-                reply_lines.append(f"💰 *Importe:* {amount_val} €")
+            loc = meta.get("location")
+            if loc and str(loc).lower() != "null":
+                reply_lines.append(f"📍 *Ubicación:* {loc}")
 
-            if spec.get("transaction_type"):
-                reply_lines.append(f"💳 *Tipo Transacción:* `{spec.get('transaction_type')}`")
+            amount_val = float(spec.get("numeric_amount") or 0.0)
+            if amount_val > 0: reply_lines.append(f"💰 *Importe:* {amount_val} €")
+
+            if spec.get("transaction_type"): reply_lines.append(f"💳 *Tipo Transacción:* `{spec.get('transaction_type')}`")
 
             entities = meta.get("entities")
             if entities and isinstance(entities, list) and len(entities) > 0:
                 reply_lines.append(f"👤 *Entidades:* {', '.join(entities)}")
 
-            if spec.get("status"):
-                reply_lines.append(f"📌 *Estado:* `{spec.get('status')}`")
+            if spec.get("status"): reply_lines.append(f"📌 *Estado:* `{spec.get('status')}`")
 
-            action_date = spec.get("action_date")
-            if action_date and str(action_date).lower() != "null":
-                reply_lines.append(f"⏰ *Fecha Acción:* `{action_date}`")
+            action_start = spec.get("action_date")
+            action_end = spec.get("action_date_end")
+            if action_start and str(action_start).lower() != "null":
+                time_str = str(action_start)
+                if action_end and str(action_end).lower() != "null":
+                    time_str += f" a {str(action_end)}"
+                reply_lines.append(f"⏰ *Fecha Acción:* `{time_str}`")
 
             await context.bot.send_message(
                 chat_id=chat_id,
@@ -233,15 +227,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 M2Cortex activo. Envíame datos para guardar o pregúntame por tus recuerdos.")
 
 def main():
-    # 1. Servidor Web de salud para Render
     web_thread = threading.Thread(target=start_health_server, daemon=True)
     web_thread.start()
 
-    # 2. Worker Keep-Alive 24/7
     ping_thread = threading.Thread(target=keep_alive_worker, daemon=True)
     ping_thread.start()
 
-    # 3. Arranque del bot de Telegram
     logger.info("🚀 Iniciando M2Cortex Engine Modularizado...")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))

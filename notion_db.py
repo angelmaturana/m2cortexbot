@@ -15,7 +15,6 @@ NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 notion = NotionClient(auth=NOTION_API_KEY)
 
 def save_to_notion(data: dict):
-    """Guarda los datos estructurados en Notion garantizando siempre la hora en Date."""
     metadata = data.get("general_metadata", {})
     specific = data.get("specific_data", {})
 
@@ -25,7 +24,6 @@ def save_to_notion(data: dict):
     tags = [t.replace("#", "").strip() for t in metadata.get("tags", []) if isinstance(t, str) and t.strip()]
     amount = float(specific.get("numeric_amount") or 0.0)
 
-    # 1. Fecha de registro con HORA COMPLETA (Europe/Madrid)
     tz_madrid = ZoneInfo("Europe/Madrid")
     date_val = specific.get("detected_date")
     
@@ -44,30 +42,44 @@ def save_to_notion(data: dict):
         "Summary": {"rich_text": [{"text": {"content": summary[:2000]}}]}
     }
 
-    # 2. Tipado de Transacción (Transaction Type)
     tx_type = specific.get("transaction_type")
     if tx_type and tx_type in ["Gasto", "Ingreso", "Me Deben", "Debo"]:
         properties["Transaction Type"] = {"select": {"name": tx_type}}
 
-    # 3. Entidades (Entities)
     entities = metadata.get("entities", [])
     if entities and isinstance(entities, list):
         clean_entities = [e.strip()[:100] for e in entities if isinstance(e, str) and e.strip()]
         if clean_entities:
             properties["Entities"] = {"multi_select": [{"name": e} for e in clean_entities]}
 
-    # 4. Estado (Status)
     status_val = specific.get("status")
     if status_val and status_val in ["Pendiente", "Completado", "Cancelado"]:
         properties["Status"] = {"select": {"name": status_val}}
 
-    # 5. Fecha de Acción (Action Date)
+    # FECHAS DE INICIO Y FIN PARA CALENDARIO
     action_date_val = specific.get("action_date")
+    action_date_end = specific.get("action_date_end")
     if action_date_val and str(action_date_val).lower() != "null":
-        properties["Action Date"] = {"date": {"start": str(action_date_val)}}
+        date_dict = {"start": str(action_date_val)}
+        if action_date_end and str(action_date_end).lower() != "null":
+            date_dict["end"] = str(action_date_end)
+        properties["Action Date"] = {"date": date_dict}
+
+    # BLOQUES INTERNOS (Ubicación y Contexto)
+    children = []
+    
+    location = metadata.get("location")
+    if location and str(location).lower() != "null":
+        children.append({
+            "object": "block",
+            "type": "paragraph",
+            "paragraph": {
+                "rich_text": [{"type": "text", "text": {"content": f"📍 Ubicación: {location}"}}]
+            }
+        })
 
     raw_ctx = str(data.get("raw_context") or "Sin contexto adicional.")
-    children = [
+    children.extend([
         {
             "object": "block",
             "type": "heading_2",
@@ -77,15 +89,10 @@ def save_to_notion(data: dict):
             "object": "block",
             "type": "paragraph",
             "paragraph": {
-                "rich_text": [
-                    {
-                        "type": "text",
-                        "text": {"content": raw_ctx[:2000]}
-                    }
-                ]
+                "rich_text": [{"type": "text", "text": {"content": raw_ctx[:2000]}}]
             }
         }
-    ]
+    ])
 
     tasks = specific.get("hidden_tasks", [])
     if tasks and isinstance(tasks, list):
@@ -111,7 +118,6 @@ def save_to_notion(data: dict):
     )
 
 def _build_notion_filter(query_filters: dict = None, category_fallback: str = None):
-    """Construye el árbol de filtros combinados para la API de Notion."""
     and_conditions = []
     
     cat = None
@@ -122,48 +128,30 @@ def _build_notion_filter(query_filters: dict = None, category_fallback: str = No
         
     valid_categories = ["FINANCE", "HEALTH", "KNOWLEDGE", "INVENTORY", "DIARY", "CRM"]
     if cat in valid_categories and cat != "KNOWLEDGE":
-        and_conditions.append({
-            "property": "Category",
-            "select": {"equals": cat}
-        })
+        and_conditions.append({"property": "Category", "select": {"equals": cat}})
 
     if query_filters:
         tx_type = query_filters.get("transaction_type")
         if tx_type in ["Gasto", "Ingreso", "Me Deben", "Debo"]:
-            and_conditions.append({
-                "property": "Transaction Type",
-                "select": {"equals": tx_type}
-            })
+            and_conditions.append({"property": "Transaction Type", "select": {"equals": tx_type}})
 
         entities = query_filters.get("entities", [])
         if entities and isinstance(entities, list):
             for ent in entities:
                 if isinstance(ent, str) and ent.strip():
-                    and_conditions.append({
-                        "property": "Entities",
-                        "multi_select": {"contains": ent.strip()}
-                    })
+                    and_conditions.append({"property": "Entities", "multi_select": {"contains": ent.strip()}})
 
         status = query_filters.get("status")
         if status in ["Pendiente", "Completado", "Cancelado"]:
-            and_conditions.append({
-                "property": "Status",
-                "select": {"equals": status}
-            })
+            and_conditions.append({"property": "Status", "select": {"equals": status}})
 
         date_start = query_filters.get("date_start")
         if date_start and str(date_start).lower() != "null":
-            and_conditions.append({
-                "property": "Date",
-                "date": {"on_or_after": str(date_start)}
-            })
+            and_conditions.append({"property": "Date", "date": {"on_or_after": str(date_start)}})
 
         date_end = query_filters.get("date_end")
         if date_end and str(date_end).lower() != "null":
-            and_conditions.append({
-                "property": "Date",
-                "date": {"on_or_before": str(date_end)}
-            })
+            and_conditions.append({"property": "Date", "date": {"on_or_before": str(date_end)}})
 
     if len(and_conditions) == 1:
         return and_conditions[0]
@@ -172,9 +160,7 @@ def _build_notion_filter(query_filters: dict = None, category_fallback: str = No
     return None
 
 def query_notion_db(query_filters: dict = None, category_filter: str = None, max_records: int = 50):
-    """Consulta Notion con paginación automática y extracción de Transaction Type."""
     url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
-    
     headers = {
         "Authorization": f"Bearer {NOTION_API_KEY}",
         "Notion-Version": "2022-06-28",
@@ -182,7 +168,6 @@ def query_notion_db(query_filters: dict = None, category_filter: str = None, max
     }
     
     filter_obj = _build_notion_filter(query_filters, category_filter)
-    
     raw_pages = []
     has_more = True
     start_cursor = None
@@ -194,30 +179,25 @@ def query_notion_db(query_filters: dict = None, category_filter: str = None, max
                 "page_size": page_size,
                 "sorts": [{"property": "Date", "direction": "descending"}]
             }
-            if filter_obj:
-                payload["filter"] = filter_obj
-            if start_cursor:
-                payload["start_cursor"] = start_cursor
+            if filter_obj: payload["filter"] = filter_obj
+            if start_cursor: payload["start_cursor"] = start_cursor
 
             response = requests.post(url, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
-            
             results = data.get("results", [])
             raw_pages.extend(results)
-            
             has_more = data.get("has_more", False)
             start_cursor = data.get("next_cursor")
 
         if not raw_pages and filter_obj is not None:
-            logger.info("Filtro específico sin coincidencias. Ejecutando consulta amplia de recuperación...")
+            logger.info("Filtro sin coincidencias. Consulta amplia...")
             fallback_payload = {
                 "page_size": 15,
                 "sorts": [{"property": "Date", "direction": "descending"}]
             }
             if category_filter and category_filter != "KNOWLEDGE":
                 fallback_payload["filter"] = {"property": "Category", "select": {"equals": category_filter}}
-                
             fallback_res = requests.post(url, json=fallback_payload, headers=headers)
             fallback_res.raise_for_status()
             raw_pages = fallback_res.json().get("results", [])
@@ -225,56 +205,30 @@ def query_notion_db(query_filters: dict = None, category_filter: str = None, max
         formatted_results = []
         for page in reversed(raw_pages):
             props = page.get("properties", {})
-            
-            try:
-                title = props.get("Name", {}).get("title", [{"plain_text": "Sin título"}])[0].get("plain_text", "Sin título")
-            except Exception:
-                title = "Sin título"
-                
-            try:
-                summary = props.get("Summary", {}).get("rich_text", [{"plain_text": "Sin resumen"}])[0].get("plain_text", "Sin resumen")
-            except Exception:
-                summary = "Sin resumen"
-                
-            try:
-                amount = props.get("Amount", {}).get("number", 0) or 0
-            except Exception:
-                amount = 0
-            
+            try: title = props.get("Name", {}).get("title", [{"plain_text": "Sin título"}])[0].get("plain_text", "Sin título")
+            except Exception: title = "Sin título"
+            try: summary = props.get("Summary", {}).get("rich_text", [{"plain_text": "Sin resumen"}])[0].get("plain_text", "Sin resumen")
+            except Exception: summary = "Sin resumen"
+            try: amount = props.get("Amount", {}).get("number", 0) or 0
+            except Exception: amount = 0
             try:
                 date_obj = props.get("Date", {}).get("date")
                 date_str = date_obj.get("start") if date_obj else "Sin fecha"
-            except Exception:
-                date_str = "Sin fecha"
+            except Exception: date_str = "Sin fecha"
             
             record_text = f"- [{date_str}] {title}: {summary}"
-            if amount > 0:
-                record_text += f" | Importe: {amount}€"
-                
+            if amount > 0: record_text += f" | Importe: {amount}€"
+            
             tx_type_obj = props.get("Transaction Type", {}).get("select")
-            if tx_type_obj and tx_type_obj.get("name"):
-                record_text += f" | Tipo Transacción: {tx_type_obj.get('name')}"
-                
-            entities_list = props.get("Entities", {}).get("multi_select", [])
-            if entities_list:
-                ent_names = [e.get("name") for e in entities_list if e.get("name")]
-                if ent_names:
-                    record_text += f" | Entidades: {', '.join(ent_names)}"
-                    
-            status_obj = props.get("Status", {}).get("select")
-            if status_obj and status_obj.get("name"):
-                record_text += f" | Estado: {status_obj.get('name')}"
-                
+            if tx_type_obj and tx_type_obj.get("name"): record_text += f" | Tipo: {tx_type_obj.get('name')}"
+            
             action_date_obj = props.get("Action Date", {}).get("date")
             if action_date_obj and action_date_obj.get("start"):
-                record_text += f" | Fecha de Acción: {action_date_obj.get('start')}"
+                record_text += f" | Acción: {action_date_obj.get('start')}"
                 
             formatted_results.append(record_text)
             
         return formatted_results
-
     except Exception as e:
         logger.error(f"Error crítico conectando a Notion: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-            return [f"ERROR_NOTION_API: {e.response.text}"]
         return [f"ERROR_NOTION_API: {str(e)}"]

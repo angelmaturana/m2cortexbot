@@ -34,17 +34,12 @@ def get_next_gemini_client():
     global CURRENT_KEY_INDEX
     key = API_KEYS[CURRENT_KEY_INDEX]
     active_idx = CURRENT_KEY_INDEX + 1
-    # Rota circularmente para la siguiente petición entrante
     CURRENT_KEY_INDEX = (CURRENT_KEY_INDEX + 1) % len(API_KEYS)
     return genai.Client(api_key=key), active_idx
 
 def call_gemini_with_retry(contents, config=None):
-    """
-    Ejecuta llamadas a Gemini 3.6 Flash con:
-    1. Balanceo de carga continuo entre peticiones.
-    2. Reintentos con micro-pausa (backoff) ante límites 429.
-    """
-    max_retries = len(API_KEYS) * 2  # Permite 2 vueltas completas al ciclo
+    """Llamadas a Gemini 3.6 Flash con Load Balancing circular y Backoff."""
+    max_retries = len(API_KEYS) * 2
     
     for attempt in range(max_retries):
         client, key_num = get_next_gemini_client()
@@ -63,8 +58,8 @@ def call_gemini_with_retry(contents, config=None):
             if any(err in error_str for err in error_triggers):
                 sleep_time = 1.0 + (attempt * 0.5)
                 logger.warning(
-                    f"⚠️ Llave {key_num} saturada o no disponible ({error_str[:60]}...). "
-                    f"Pausa de seguridad de {sleep_time:.1f}s y probando siguiente llave..."
+                    f"⚠️ Llave {key_num} saturada o no disponible. "
+                    f"Pausa de seguridad de {sleep_time:.1f}s y probando siguiente..."
                 )
                 time.sleep(sleep_time)
             else:
@@ -73,7 +68,7 @@ def call_gemini_with_retry(contents, config=None):
     raise Exception("🛑 Todas las llaves de Gemini están temporalmente saturadas. Espera unos segundos.")
 
 def get_classifier_prompt():
-    """Genera el prompt inyectando fecha, tipado de transacción, filtros RAG y soporte multimodal."""
+    """Prompt multimodal con reglas para Eventos, Fechas de fin y Ubicación."""
     tz_madrid = ZoneInfo("Europe/Madrid")
     now = datetime.now(tz_madrid)
     dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
@@ -90,27 +85,17 @@ CONTEXTO TEMPORAL EXACTO (HORA LOCAL ESPAÑOLA):
 - Día de la semana actual: {dia_semana}
 
 REGLAS OBLIGATORIAS:
-1. Todo el contenido generado DEBE estar redactado estrictamente en ESPAÑOL.
-2. Identifica nombres de personas, contactos, clientes o entidades y colócalos en 'entities'.
-3. TIPADO FINANCIERO ('transaction_type'):
-   - "Gasto": Compras, consumos, facturas pagadas o salidas directas de dinero.
-   - "Ingreso": Cobros directos recibidos, salarios o entradas de dinero.
-   - "Me Deben": Préstamos realizados a terceros o saldos pendientes a favor del usuario.
-   - "Debo": Deudas o compromisos de pago que el usuario asume ante un tercero.
-   - null: Si la entrada no es una operación económica ni involucra dinero.
-4. ESTADO ('status'):
-   - "Pendiente": Para deudas activas ("Me Deben" o "Debo"), tareas no terminadas o alarmas.
-   - "Completado": Para gastos liquidados, ingresos recibidos o tareas ya ejecutadas.
-   - null: Entradas informativas neutras sin ciclo de vida.
-5. FECHAS:
-   - 'detected_date': Si el evento ocurrió en una fecha/hora pasada o específica diferente al momento actual (ej. "ayer a las 20:00", "el 12 de agosto a las 10:00"), calcúlala en formato ISO 8601 completo (YYYY-MM-DDTHH:MM:SS). Si el evento ocurre en el momento actual o no se especifica hora/fecha pasada, asigna estrictamente null para registrar la marca de tiempo exacta del sistema.
-   - 'action_date': Si el mensaje especifica una acción/alarma futura (ej. "mañana a las 11:30"), calcúlala en base a la 'Fecha y hora actual del sistema' en formato ISO 8601 (YYYY-MM-DDTHH:MM:SS). Si no se indica hora, asume 09:00:00. Si no hay acción futura, asigna null.
-6. RESUMEN DETALLADO ('executive_summary'): Desglose completo (3 a 6 frases densas, máximo 1.500 caracteres) con motivos, cifras, acuerdos y estado.
-7. SI INTENT ES 'QUERY':
-   - Configura 'query_filters' con precisión:
-     - Si pregunta por deudas por cobrar: 'transaction_type': "Me Deben", 'status': "Pendiente".
-     - Si pregunta por gastos de hoy: 'category': "FINANCE", 'transaction_type': "Gasto", 'date_start': "{today_iso}".
-     - Si pregunta por alguien específico: pon su nombre en 'entities'.
+1. INTENT: 
+   - Usa "EVENT" estrictamente si el mensaje describe una cita, reunión, viaje o evento programable en calendario.
+   - Usa "QUERY" si el usuario hace una pregunta sobre su historial de Notion o pide calcular datos.
+   - Usa "RECORD" para guardar gastos, notas, deudas o información general.
+2. Identifica nombres de personas o entidades en 'entities'.
+3. TIPADO FINANCIERO ('transaction_type'): "Gasto", "Ingreso", "Me Deben", "Debo" o null.
+4. FECHAS (Formato estricto YYYY-MM-DDTHH:MM:SS):
+   - 'action_date': Fecha y hora de inicio de la alarma, evento o compromiso futuro. Asume 09:00 si no hay hora específica.
+   - 'action_date_end': Fecha y hora de finalización del evento. Si se intuye duración (ej. "de 10 a 12" o "durante 2 horas"), calcúlala en base al inicio. Si no hay fin claro, asigna null.
+5. UBICACIÓN ('location'): Si se menciona un lugar, calle, local o ciudad para un evento/nota, extráelo aquí. Si no, null.
+6. RESUMEN: Desglose completo (3 a 6 frases densas) con motivos, cifras y acuerdos.
 
 Devuelve la respuesta estructurada estrictamente con el siguiente esquema JSON:
 {{
@@ -127,6 +112,7 @@ Devuelve la respuesta estructurada estrictamente con el siguiente esquema JSON:
   "general_metadata": {{
     "title": "Título descriptivo en español (3 a 5 palabras)",
     "executive_summary": "Explicación detallada de hasta 1500 caracteres con contexto y acuerdos",
+    "location": "Ubicación detectada o null",
     "tags": ["Etiqueta1", "Etiqueta2"],
     "entities": ["PersonaOEntidad1", "PersonaOEntidad2"],
     "sentiment": "Positive" | "Neutral" | "Negative"
@@ -136,8 +122,9 @@ Devuelve la respuesta estructurada estrictamente con el siguiente esquema JSON:
     "transaction_type": "Gasto" | "Ingreso" | "Me Deben" | "Debo" | null,
     "detected_date": "YYYY-MM-DDTHH:MM:SS or null",
     "action_date": "YYYY-MM-DDTHH:MM:SS or null",
+    "action_date_end": "YYYY-MM-DDTHH:MM:SS or null",
     "status": "Pendiente" | "Completado" | "Cancelado" | null,
     "hidden_tasks": ["Tarea detectada en español"]
   }},
-  "raw_context": "Transcripción completa o descripción visual detallada en español de lo observado"
+  "raw_context": "Transcripción completa o descripción detallada en español de lo observado"
 }}"""
