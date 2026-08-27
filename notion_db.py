@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -13,6 +14,13 @@ NOTION_API_KEY = os.getenv("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 
 notion = NotionClient(auth=NOTION_API_KEY)
+
+def _is_valid_iso_date(d):
+    """Verifica mediante Expresiones Regulares que la fecha sea válida para Notion API."""
+    if not d or not isinstance(d, str):
+        return False
+    # Filtra alucinaciones como "YYYY-MM-DD", "null", "none" o cadenas vacías
+    return bool(re.match(r'^\d{4}-\d{2}-\d{2}', d.strip()))
 
 def save_to_notion(data: dict):
     metadata = data.get("general_metadata", {})
@@ -145,13 +153,14 @@ def _build_notion_filter(query_filters: dict = None, category_fallback: str = No
         if status in ["Pendiente", "Completado", "Cancelado"]:
             and_conditions.append({"property": "Status", "select": {"equals": status}})
 
+        # Guardia Regex contra fechas alucinadas
         date_start = query_filters.get("date_start")
-        if date_start and str(date_start).lower() != "null":
-            and_conditions.append({"property": "Date", "date": {"on_or_after": str(date_start)}})
+        if _is_valid_iso_date(date_start):
+            and_conditions.append({"property": "Date", "date": {"on_or_after": date_start.strip()}})
 
         date_end = query_filters.get("date_end")
-        if date_end and str(date_end).lower() != "null":
-            and_conditions.append({"property": "Date", "date": {"on_or_before": str(date_end)}})
+        if _is_valid_iso_date(date_end):
+            and_conditions.append({"property": "Date", "date": {"on_or_before": date_end.strip()}})
 
     if len(and_conditions) == 1:
         return and_conditions[0]
@@ -231,4 +240,11 @@ def query_notion_db(query_filters: dict = None, category_filter: str = None, max
         return formatted_results
     except Exception as e:
         logger.error(f"Error crítico conectando a Notion: {e}")
-        return [f"ERROR_NOTION_API: {str(e)}"]
+        err_msg = str(e)
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                # Extrae el mensaje de error JSON real de Notion en lugar de un volcado general
+                err_msg = e.response.json().get("message", e.response.text)
+            except:
+                err_msg = e.response.text
+        return [f"ERROR_NOTION_API: {err_msg}"]
