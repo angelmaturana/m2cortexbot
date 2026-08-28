@@ -2,3 +2,4 @@ python-telegram-bot
 notion-client
 python-dotenv
 requests
+groq
