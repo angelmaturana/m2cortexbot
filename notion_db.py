@@ -16,10 +16,9 @@ NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 notion = NotionClient(auth=NOTION_API_KEY)
 
 def _is_valid_iso_date(d):
-    """Verifica mediante Expresiones Regulares que la fecha sea válida para Notion API."""
+    """Evita que una fecha alucinada bloquee la búsqueda en Notion."""
     if not d or not isinstance(d, str):
         return False
-    # Filtra alucinaciones como "YYYY-MM-DD", "null", "none" o cadenas vacías
     return bool(re.match(r'^\d{4}-\d{2}-\d{2}', d.strip()))
 
 def save_to_notion(data: dict):
@@ -64,7 +63,6 @@ def save_to_notion(data: dict):
     if status_val and status_val in ["Pendiente", "Completado", "Cancelado"]:
         properties["Status"] = {"select": {"name": status_val}}
 
-    # FECHAS DE INICIO Y FIN PARA CALENDARIO
     action_date_val = specific.get("action_date")
     action_date_end = specific.get("action_date_end")
     if action_date_val and str(action_date_val).lower() != "null":
@@ -73,57 +71,32 @@ def save_to_notion(data: dict):
             date_dict["end"] = str(action_date_end)
         properties["Action Date"] = {"date": date_dict}
 
-    # BLOQUES INTERNOS (Ubicación y Contexto)
     children = []
-    
     location = metadata.get("location")
     if location and str(location).lower() != "null":
         children.append({
             "object": "block",
             "type": "paragraph",
-            "paragraph": {
-                "rich_text": [{"type": "text", "text": {"content": f"📍 Ubicación: {location}"}}]
-            }
+            "paragraph": {"rich_text": [{"type": "text", "text": {"content": f"📍 Ubicación: {location}"}}]}
         })
 
     raw_ctx = str(data.get("raw_context") or "Sin contexto adicional.")
     children.extend([
-        {
-            "object": "block",
-            "type": "heading_2",
-            "heading_2": {"rich_text": [{"type": "text", "text": {"content": "🔍 Detalle y Contexto"}}]}
-        },
-        {
-            "object": "block",
-            "type": "paragraph",
-            "paragraph": {
-                "rich_text": [{"type": "text", "text": {"content": raw_ctx[:2000]}}]
-            }
-        }
+        {"object": "block", "type": "heading_2", "heading_2": {"rich_text": [{"type": "text", "text": {"content": "🔍 Detalle y Contexto"}}]}},
+        {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": raw_ctx[:2000]}}]}}
     ])
 
     tasks = specific.get("hidden_tasks", [])
     if tasks and isinstance(tasks, list):
-        children.append({
-            "object": "block",
-            "type": "heading_2",
-            "heading_2": {"rich_text": [{"type": "text", "text": {"content": "✅ Tareas Detectadas"}}]}
-        })
+        children.append({"object": "block", "type": "heading_2", "heading_2": {"rich_text": [{"type": "text", "text": {"content": "✅ Tareas Detectadas"}}]}})
         for task in tasks:
             children.append({
                 "object": "block",
                 "type": "to_do",
-                "to_do": {
-                    "rich_text": [{"type": "text", "text": {"content": str(task)[:2000]}}],
-                    "checked": False
-                }
+                "to_do": {"rich_text": [{"type": "text", "text": {"content": str(task)[:2000]}}], "checked": False}
             })
 
-    notion.pages.create(
-        parent={"database_id": NOTION_DATABASE_ID},
-        properties=properties,
-        children=children
-    )
+    notion.pages.create(parent={"database_id": NOTION_DATABASE_ID}, properties=properties, children=children)
 
 def _build_notion_filter(query_filters: dict = None, category_fallback: str = None):
     and_conditions = []
@@ -153,7 +126,6 @@ def _build_notion_filter(query_filters: dict = None, category_fallback: str = No
         if status in ["Pendiente", "Completado", "Cancelado"]:
             and_conditions.append({"property": "Status", "select": {"equals": status}})
 
-        # Guardia Regex contra fechas alucinadas
         date_start = query_filters.get("date_start")
         if _is_valid_iso_date(date_start):
             and_conditions.append({"property": "Date", "date": {"on_or_after": date_start.strip()}})
@@ -162,10 +134,8 @@ def _build_notion_filter(query_filters: dict = None, category_fallback: str = No
         if _is_valid_iso_date(date_end):
             and_conditions.append({"property": "Date", "date": {"on_or_before": date_end.strip()}})
 
-    if len(and_conditions) == 1:
-        return and_conditions[0]
-    elif len(and_conditions) > 1:
-        return {"and": and_conditions}
+    if len(and_conditions) == 1: return and_conditions[0]
+    elif len(and_conditions) > 1: return {"and": and_conditions}
     return None
 
 def query_notion_db(query_filters: dict = None, category_filter: str = None, max_records: int = 50):
@@ -177,34 +147,24 @@ def query_notion_db(query_filters: dict = None, category_filter: str = None, max
     }
     
     filter_obj = _build_notion_filter(query_filters, category_filter)
-    raw_pages = []
-    has_more = True
-    start_cursor = None
+    raw_pages, has_more, start_cursor = [], True, None
 
     try:
         while has_more and len(raw_pages) < max_records:
             page_size = min(50, max_records - len(raw_pages))
-            payload = {
-                "page_size": page_size,
-                "sorts": [{"property": "Date", "direction": "descending"}]
-            }
+            payload = {"page_size": page_size, "sorts": [{"property": "Date", "direction": "descending"}]}
             if filter_obj: payload["filter"] = filter_obj
             if start_cursor: payload["start_cursor"] = start_cursor
 
             response = requests.post(url, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
-            results = data.get("results", [])
-            raw_pages.extend(results)
-            has_more = data.get("has_more", False)
-            start_cursor = data.get("next_cursor")
+            raw_pages.extend(data.get("results", []))
+            has_more, start_cursor = data.get("has_more", False), data.get("next_cursor")
 
         if not raw_pages and filter_obj is not None:
             logger.info("Filtro sin coincidencias. Consulta amplia...")
-            fallback_payload = {
-                "page_size": 15,
-                "sorts": [{"property": "Date", "direction": "descending"}]
-            }
+            fallback_payload = {"page_size": 15, "sorts": [{"property": "Date", "direction": "descending"}]}
             if category_filter and category_filter != "KNOWLEDGE":
                 fallback_payload["filter"] = {"property": "Category", "select": {"equals": category_filter}}
             fallback_res = requests.post(url, json=fallback_payload, headers=headers)
@@ -215,15 +175,13 @@ def query_notion_db(query_filters: dict = None, category_filter: str = None, max
         for page in reversed(raw_pages):
             props = page.get("properties", {})
             try: title = props.get("Name", {}).get("title", [{"plain_text": "Sin título"}])[0].get("plain_text", "Sin título")
-            except Exception: title = "Sin título"
+            except: title = "Sin título"
             try: summary = props.get("Summary", {}).get("rich_text", [{"plain_text": "Sin resumen"}])[0].get("plain_text", "Sin resumen")
-            except Exception: summary = "Sin resumen"
+            except: summary = "Sin resumen"
             try: amount = props.get("Amount", {}).get("number", 0) or 0
-            except Exception: amount = 0
-            try:
-                date_obj = props.get("Date", {}).get("date")
-                date_str = date_obj.get("start") if date_obj else "Sin fecha"
-            except Exception: date_str = "Sin fecha"
+            except: amount = 0
+            try: date_str = props.get("Date", {}).get("date").get("start")
+            except: date_str = "Sin fecha"
             
             record_text = f"- [{date_str}] {title}: {summary}"
             if amount > 0: record_text += f" | Importe: {amount}€"
@@ -242,9 +200,6 @@ def query_notion_db(query_filters: dict = None, category_filter: str = None, max
         logger.error(f"Error crítico conectando a Notion: {e}")
         err_msg = str(e)
         if hasattr(e, 'response') and e.response is not None:
-            try:
-                # Extrae el mensaje de error JSON real de Notion en lugar de un volcado general
-                err_msg = e.response.json().get("message", e.response.text)
-            except:
-                err_msg = e.response.text
+            try: err_msg = e.response.json().get("message", e.response.text)
+            except: err_msg = e.response.text
         return [f"ERROR_NOTION_API: {err_msg}"]
