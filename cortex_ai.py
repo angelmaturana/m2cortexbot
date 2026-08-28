@@ -119,7 +119,7 @@ Devuelve un JSON estrictamente con esta estructura:
 }}"""
 
 def process_and_classify(text_input=None, image_bytes=None, audio_bytes=None, mime_type=None):
-    """Orquesta los agentes de Groq y devuelve el JSON estructurado usando Mixtral."""
+    """Orquesta los agentes de Groq y devuelve el JSON estructurado."""
     context_parts = []
     
     if text_input:
@@ -137,7 +137,7 @@ def process_and_classify(text_input=None, image_bytes=None, audio_bytes=None, mi
     
     try:
         completion = client.chat.completions.create(
-            model="mixtral-8x7b-32768",
+            model="llama3-8b-8192",
             messages=[
                 {"role": "system", "content": _get_classifier_prompt()},
                 {"role": "user", "content": final_context}
@@ -149,14 +149,14 @@ def process_and_classify(text_input=None, image_bytes=None, audio_bytes=None, mi
         parsed["raw_context"] = final_context
         return parsed
     except Exception as e:
-        logger.error(f"Error clasificando en Mixtral: {e}")
+        logger.error(f"Error clasificando en Llama: {e}")
         raise e
 
 def generate_rag_answer(prompt_text):
     """Genera la respuesta final al usuario basándose en datos de Notion."""
     try:
         completion = client.chat.completions.create(
-            model="mixtral-8x7b-32768",
+            model="llama3-8b-8192",
             messages=[{"role": "user", "content": prompt_text}],
             temperature=0.3
         )
