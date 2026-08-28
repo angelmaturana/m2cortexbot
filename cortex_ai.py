@@ -1,74 +1,60 @@
 import logging
 import os
-import time
+import json
+import base64
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from groq import Groq
 
 load_dotenv()
 logger = logging.getLogger("M2Cortex")
 
-# --- SISTEMA DE ROTACIÓN Y BALANCEO DE 6 LLAVES GEMINI ---
-API_KEYS = []
-for key_name in [
-    "GEMINI_API_KEY",
-    "GEMINI_API_KEY_2",
-    "GEMINI_API_KEY_3",
-    "GEMINI_API_KEY_4",
-    "GEMINI_API_KEY_5",
-    "GEMINI_API_KEY_6"
-]:
-    val = os.getenv(key_name)
-    if val and val.strip():
-        API_KEYS.append(val.strip())
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+if not GROQ_API_KEY:
+    logger.error("❌ CRÍTICO: No se ha encontrado GROQ_API_KEY en las variables de entorno.")
 
-if not API_KEYS:
-    logger.error("❌ CRÍTICO: No se ha encontrado ninguna GEMINI_API_KEY en las variables de entorno.")
+client = Groq(api_key=GROQ_API_KEY)
 
-CURRENT_KEY_INDEX = 0
+def _transcribe_audio(audio_bytes, mime_type="audio/ogg"):
+    """Usa Whisper-Large-v3 de Groq para transcribir audios a texto."""
+    ext = "ogg" if "ogg" in mime_type else "mp3"
+    filename = f"audio.{ext}"
+    try:
+        completion = client.audio.transcriptions.create(
+            file=(filename, audio_bytes),
+            model="whisper-large-v3",
+            response_format="text",
+            language="es"
+        )
+        return completion
+    except Exception as e:
+        logger.error(f"Error transcribiendo audio: {e}")
+        raise e
 
-def get_next_gemini_client():
-    """Balancea la carga proactivamente entre todas las llaves disponibles."""
-    global CURRENT_KEY_INDEX
-    key = API_KEYS[CURRENT_KEY_INDEX]
-    active_idx = CURRENT_KEY_INDEX + 1
-    CURRENT_KEY_INDEX = (CURRENT_KEY_INDEX + 1) % len(API_KEYS)
-    return genai.Client(api_key=key), active_idx
+def _describe_image(image_bytes):
+    """Usa Llama 3.2 Vision para extraer el contexto visual de la foto."""
+    b64_img = base64.b64encode(image_bytes).decode('utf-8')
+    try:
+        completion = client.chat.completions.create(
+            model="llama-3.2-90b-vision-preview",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Describe los detalles clave de esta imagen (ej. cantidades, nombres, objetos, conceptos, recibos) de forma concisa y en español para poder registrarlos en una base de datos de inventario o finanzas."},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
+                    ]
+                }
+            ],
+            temperature=0.1
+        )
+        return completion.choices[0].message.content
+    except Exception as e:
+        logger.error(f"Error analizando imagen: {e}")
+        raise e
 
-def call_gemini_with_retry(contents, config=None):
-    """Llamadas a Gemini 3.6 Flash con Load Balancing circular y Backoff."""
-    max_retries = len(API_KEYS) * 2
-    
-    for attempt in range(max_retries):
-        client, key_num = get_next_gemini_client()
-        try:
-            chat = client.chats.create(model="gemini-3.6-flash", config=config)
-            response = chat.send_message(contents)
-            return response
-        except Exception as e:
-            error_str = str(e)
-            error_triggers = [
-                "429", "RESOURCE_EXHAUSTED", "Quota",
-                "401", "UNAUTHENTICATED",
-                "400", "INVALID_ARGUMENT", "API_KEY_INVALID"
-            ]
-            
-            if any(err in error_str for err in error_triggers):
-                sleep_time = 1.0 + (attempt * 0.5)
-                logger.warning(
-                    f"⚠️ Llave {key_num} saturada o no disponible. "
-                    f"Pausa de seguridad de {sleep_time:.1f}s y probando siguiente..."
-                )
-                time.sleep(sleep_time)
-            else:
-                raise e
-                
-    raise Exception("🛑 Todas las llaves de Gemini están temporalmente saturadas. Espera unos segundos.")
-
-def get_classifier_prompt():
-    """Prompt multimodal con reglas estrictas de extracción de filtros y fechas."""
+def _get_classifier_prompt():
     tz_madrid = ZoneInfo("Europe/Madrid")
     now = datetime.now(tz_madrid)
     dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
@@ -77,7 +63,6 @@ def get_classifier_prompt():
     today_iso = now.strftime("%Y-%m-%d")
     
     return f"""Eres M2Cortex, un motor avanzado de enrutamiento de datos, memoria cognitiva e indexación financiera.
-Analiza la entrada proporcionada (texto, foto, audio o vídeo) y clasifícala.
 
 CONTEXTO TEMPORAL EXACTO (HORA LOCAL ESPAÑOLA):
 - Fecha y hora actual del sistema: {now_str}
@@ -87,21 +72,21 @@ CONTEXTO TEMPORAL EXACTO (HORA LOCAL ESPAÑOLA):
 REGLAS OBLIGATORIAS:
 1. INTENT: 
    - Usa "EVENT" estrictamente si el mensaje describe una cita, reunión, viaje o evento programable en calendario.
-   - Usa "QUERY" si el usuario hace una pregunta sobre su historial de Notion o pide recordar datos/matrículas/nombres.
+   - Usa "QUERY" si el usuario hace una pregunta sobre su historial, base de datos o pide recordar algo.
    - Usa "RECORD" para guardar inventario, gastos, notas, deudas o información general.
-2. Identifica nombres de personas, objetos clave (ej. "coche", "matrícula") o entidades en 'entities'.
+2. Identifica nombres de personas, objetos clave o entidades en 'entities'.
 3. TIPADO FINANCIERO ('transaction_type'): "Gasto", "Ingreso", "Me Deben", "Debo" o null.
 4. FECHAS (Formato estricto YYYY-MM-DDTHH:MM:SS):
-   - 'action_date': Fecha y hora de inicio de la alarma, evento o compromiso futuro. Asume 09:00 si no hay hora específica.
+   - 'action_date': Fecha y hora de inicio de la alarma, evento o compromiso futuro. Asume 09:00 si no hay hora.
    - 'action_date_end': Fecha y hora de finalización del evento.
 5. UBICACIÓN ('location'): Si se menciona un lugar para un evento/nota, extráelo aquí. Si no, null.
 6. RESUMEN: Desglose completo con motivos, cifras y acuerdos.
 7. SI INTENT ES 'QUERY':
    - Si pregunta por gastos de hoy: pon 'category': "FINANCE", 'transaction_type': "Gasto", 'date_start': "{today_iso}".
-   - Si pregunta por un objeto (ej. "matrícula de coche") pon palabras clave en 'entities'.
-   - IMPORTANTE: Si la pregunta NO incluye un marco temporal, asigna SIEMPRE null real a 'date_start' y 'date_end'. No uses cadenas de texto de relleno.
+   - Si pregunta por un objeto pon palabras clave en 'entities'.
+   - IMPORTANTE: Si la pregunta NO incluye un marco temporal, asigna SIEMPRE null real a 'date_start' y 'date_end'.
 
-Devuelve la respuesta estructurada estrictamente con el siguiente esquema JSON:
+Devuelve un JSON estrictamente con esta estructura:
 {{
   "intent": "RECORD",
   "master_category": "INVENTORY",
@@ -132,3 +117,51 @@ Devuelve la respuesta estructurada estrictamente con el siguiente esquema JSON:
   }},
   "raw_context": "Transcripción completa"
 }}"""
+
+def process_and_classify(text_input=None, image_bytes=None, audio_bytes=None, mime_type=None):
+    """Orquesta los agentes de Groq y devuelve el JSON estructurado."""
+    context_parts = []
+    
+    if text_input:
+        context_parts.append(f"Texto del usuario: {text_input}")
+        
+    if audio_bytes:
+        transcription = _transcribe_audio(audio_bytes, mime_type)
+        context_parts.append(f"Transcripción de nota de voz: {transcription}")
+        
+    if image_bytes:
+        description = _describe_image(image_bytes)
+        context_parts.append(f"Descripción visual de la imagen adjunta: {description}")
+        
+    final_context = "\n".join(context_parts)
+    
+    try:
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": _get_classifier_prompt()},
+                {"role": "user", "content": final_context}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.1
+        )
+        parsed = json.loads(completion.choices[0].message.content)
+        # Inyectamos el raw_context real para evitar perder la fuente
+        parsed["raw_context"] = final_context
+        return parsed
+    except Exception as e:
+        logger.error(f"Error clasificando en Llama: {e}")
+        raise e
+
+def generate_rag_answer(prompt_text):
+    """Genera la respuesta final al usuario basándose en datos de Notion."""
+    try:
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt_text}],
+            temperature=0.3
+        )
+        return completion.choices[0].message.content
+    except Exception as e:
+        logger.error(f"Error generando respuesta RAG: {e}")
+        return "Lo siento, hubo un error procesando la respuesta final."
