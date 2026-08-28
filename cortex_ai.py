@@ -37,7 +37,7 @@ def _describe_image(image_bytes):
     b64_img = base64.b64encode(image_bytes).decode('utf-8')
     try:
         completion = client.chat.completions.create(
-            model="llama-3.2-90b-vision-preview",
+            model="llama-3.2-11b-vision-preview",
             messages=[
                 {
                     "role": "user",
@@ -137,7 +137,7 @@ def process_and_classify(text_input=None, image_bytes=None, audio_bytes=None, mi
     
     try:
         completion = client.chat.completions.create(
-            model="llama3-70b-8192",
+            model="llama-3.1-8b-instant",
             messages=[
                 {"role": "system", "content": _get_classifier_prompt()},
                 {"role": "user", "content": final_context}
@@ -156,7 +156,7 @@ def generate_rag_answer(prompt_text):
     """Genera la respuesta final al usuario basándose en datos de Notion."""
     try:
         completion = client.chat.completions.create(
-            model="llama3-70b-8192",
+            model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt_text}],
             temperature=0.3
         )
