@@ -1,5 +1,4 @@
 python-telegram-bot
-google-genai
 notion-client
 python-dotenv
 requests
