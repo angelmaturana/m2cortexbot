@@ -11,8 +11,11 @@ load_dotenv()
 logger = logging.getLogger("M2Cortex")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-# Magia aquí: lee el modelo del .env o usa gemma2 por defecto
-GROQ_MODEL_ID = os.getenv("GROQ_MODEL_ID", "gemma2-9b-it")
+
+# Modelos configurables desde el .env con fallbacks por defecto
+GROQ_MODEL_ID_TEXT = os.getenv("GROQ_MODEL_ID_TEXT", "groq/compound")
+GROQ_MODEL_ID_AUDIO = os.getenv("GROQ_MODEL_ID_AUDIO", "whisper-large-v3")
+GROQ_MODEL_ID_IMAGE = os.getenv("GROQ_MODEL_ID_IMAGE", "llama-3.2-90b-vision-preview")
 
 if not GROQ_API_KEY:
     logger.error("❌ CRÍTICO: No se ha encontrado GROQ_API_KEY en las variables de entorno.")
@@ -20,27 +23,27 @@ if not GROQ_API_KEY:
 client = Groq(api_key=GROQ_API_KEY)
 
 def _transcribe_audio(audio_bytes, mime_type="audio/ogg"):
-    """Usa Whisper-Large-v3 de Groq para transcribir audios a texto."""
+    """Usa el modelo de audio configurado para transcribir audios a texto."""
     ext = "ogg" if "ogg" in mime_type else "mp3"
     filename = f"audio.{ext}"
     try:
         completion = client.audio.transcriptions.create(
             file=(filename, audio_bytes),
-            model="whisper-large-v3",
+            model=GROQ_MODEL_ID_AUDIO,
             response_format="text",
             language="es"
         )
         return completion
     except Exception as e:
-        logger.error(f"Error transcribiendo audio: {e}")
+        logger.error(f"Error transcribiendo audio con {GROQ_MODEL_ID_AUDIO}: {e}")
         raise e
 
 def _describe_image(image_bytes):
-    """Usa Llama Vision para extraer el contexto visual de la foto."""
+    """Usa el modelo de visión configurado para extraer el contexto visual de la foto."""
     b64_img = base64.b64encode(image_bytes).decode('utf-8')
     try:
         completion = client.chat.completions.create(
-            model="llama-3.2-11b-vision-preview",
+            model=GROQ_MODEL_ID_IMAGE,
             messages=[
                 {
                     "role": "user",
@@ -54,7 +57,7 @@ def _describe_image(image_bytes):
         )
         return completion.choices[0].message.content
     except Exception as e:
-        logger.error(f"Error analizando imagen: {e}")
+        logger.error(f"Error analizando imagen con {GROQ_MODEL_ID_IMAGE}: {e}")
         raise e
 
 def _get_classifier_prompt():
@@ -140,7 +143,7 @@ def process_and_classify(text_input=None, image_bytes=None, audio_bytes=None, mi
     
     try:
         completion = client.chat.completions.create(
-            model=GROQ_MODEL_ID,
+            model=GROQ_MODEL_ID_TEXT,
             messages=[
                 {"role": "system", "content": _get_classifier_prompt()},
                 {"role": "user", "content": final_context}
@@ -152,18 +155,18 @@ def process_and_classify(text_input=None, image_bytes=None, audio_bytes=None, mi
         parsed["raw_context"] = final_context
         return parsed
     except Exception as e:
-        logger.error(f"Error clasificando con modelo {GROQ_MODEL_ID}: {e}")
+        logger.error(f"Error clasificando con modelo {GROQ_MODEL_ID_TEXT}: {e}")
         raise e
 
 def generate_rag_answer(prompt_text):
     """Genera la respuesta final al usuario basándose en datos de Notion."""
     try:
         completion = client.chat.completions.create(
-            model=GROQ_MODEL_ID,
+            model=GROQ_MODEL_ID_TEXT,
             messages=[{"role": "user", "content": prompt_text}],
             temperature=0.3
         )
         return completion.choices[0].message.content
     except Exception as e:
-        logger.error(f"Error generando respuesta RAG con {GROQ_MODEL_ID}: {e}")
+        logger.error(f"Error generando respuesta RAG con {GROQ_MODEL_ID_TEXT}: {e}")
         return "Lo siento, hubo un error procesando la respuesta final."
