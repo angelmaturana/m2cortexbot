@@ -156,19 +156,37 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
             limit_match = re.search(r"Limit (\d+)", error_str)
             used_match = re.search(r"Used (\d+)", error_str)
             time_match = re.search(r"try again in ([0-9a-zA-Z\.]+)", error_str)
+            model_match = re.search(r"model `([^`]+)`", error_str)
             
             limit_val = f"{int(limit_match.group(1)):,}".replace(",", ".") if limit_match else "N/A"
             used_val = f"{int(used_match.group(1)):,}".replace(",", ".") if used_match else "N/A"
             time_val = time_match.group(1) if time_match else "unos minutos"
+            model_val = model_match.group(1) if model_match else "Desconocido"
             
             # Formateo dinámico de tiempo: limpia milisegundos y traduce sin importar magnitud
-            time_val = re.sub(r"\.\d+s", " seg", time_val)
+            time_val = re.sub(r"\.\d+s", " seg.", time_val)
             time_val = time_val.replace("h", " horas, ").replace("m", " min y ")
+            
+            # Detectar inteligentemente el tipo de modelo comparándolo con el .env
+            model_type = "GENERAL"
+            if model_val == os.getenv("GROQ_MODEL_ID_TEXT", "groq/compound"):
+                model_type = "TEXTO"
+            elif model_val == os.getenv("GROQ_MODEL_ID_AUDIO", "whisper-large-v3"):
+                model_type = "AUDIO"
+            elif model_val == os.getenv("GROQ_MODEL_ID_IMAGE", "llama-3.2-90b-vision-preview"):
+                model_type = "IMAGEN"
+            elif "whisper" in model_val.lower():
+                model_type = "AUDIO"
+            elif "vision" in model_val.lower():
+                model_type = "IMAGEN"
+            else:
+                model_type = "TEXTO" # Fallback por defecto
                 
             error_msg = (
                 "⚠️ *Límite de Inteligencia Alcanzado*\n"
                 "El modelo principal está descansando para evitar la saturación de los servidores.\n\n"
-                f"📊 *Consumo diario:* {used_val} / {limit_val} tokens\n"
+                f"🤖 *Modelo afectado:* `{model_val}` ({model_type})\n"
+                f"📊 *Consumo:* {used_val} / {limit_val} tokens\n"
                 f"⏳ *Tiempo de espera:* {time_val}\n\n"
                 "_Consejo: Inténtalo de nuevo en un rato, o cambia el modelo en tu archivo .env por uno más ligero._"
             )
