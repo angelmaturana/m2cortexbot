@@ -41,7 +41,8 @@ def keep_alive_worker():
     while True:
         try:
             requests.get(target_url, timeout=10)
-        except: pass
+        except Exception as e: 
+            logger.debug(f"Ping de mantenimiento ignorado: {e}")
         time.sleep(600)
 
 async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -86,7 +87,8 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
 
         if intent == "QUERY":
             await context.bot.send_message(chat_id=chat_id, text="🔎 Buscando en tus memorias de Notion...")
-            recent_records = notion_db.query_notion_db(parsed_json.get("query_filters"), parsed_json.get("master_category"), 50)
+            # Búsqueda ampliada a 100 recuerdos en lugar de 50
+            recent_records = notion_db.query_notion_db(parsed_json.get("query_filters"), parsed_json.get("master_category"), 100)
             
             if recent_records and recent_records[0].startswith("ERROR_NOTION_API:"):
                 await context.bot.send_message(chat_id=chat_id, text=f"⚠️ Error en Notion:\n`{recent_records[0]}`", parse_mode="Markdown")
