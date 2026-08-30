@@ -86,7 +86,7 @@ REGLAS OBLIGATORIAS:
    - 'action_date': Fecha y hora de inicio de la alarma, evento o compromiso futuro. Asume 09:00 si no hay hora.
    - 'action_date_end': Fecha y hora de finalización del evento.
 5. UBICACIÓN ('location'): Si se menciona un lugar para un evento/nota, extráelo aquí. Si no, null.
-6. RESUMEN: Desglose completo con motivos, cifras y acuerdos.
+6. RESUMEN DETALLADO ('executive_summary'): Actúa como un notario riguroso. PROHIBIDO usar lenguaje "meta" (ej. "El usuario indica que..."). Escribe directamente los hechos. NO OMITAS NINGÚN DETALLE: incluye todos los nombres propios exactos, todos los apodos, todas las fechas exactas, parentescos, marcas, modelos y cifras mencionadas. El resumen debe contener el 100% del valor informativo del mensaje original sin dejarse nada atrás.
 7. SI INTENT ES 'QUERY':
    - Si pregunta por gastos de hoy: pon 'category': "FINANCE", 'transaction_type': "Gasto", 'date_start': "{today_iso}".
    - Si pregunta por un objeto pon palabras clave en 'entities'.
@@ -106,7 +106,7 @@ Devuelve un JSON estrictamente con esta estructura:
   }},
   "general_metadata": {{
     "title": "Título descriptivo",
-    "executive_summary": "Resumen detallado",
+    "executive_summary": "Redacción directa, densa e hiperdetallada incluyendo el 100% de nombres, apodos, cifras y fechas exactas sin omitir nada.",
     "location": null,
     "tags": [],
     "entities": [],
