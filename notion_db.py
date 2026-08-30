@@ -116,11 +116,19 @@ def _build_notion_filter(query_filters: dict = None, category_fallback: str = No
         if tx_type in ["Gasto", "Ingreso", "Me Deben", "Debo"]:
             and_conditions.append({"property": "Transaction Type", "select": {"equals": tx_type}})
 
+        # 🔥 SOLUCIÓN GURÚ: Búsqueda de Texto Libre en lugar de etiquetas rígidas 🔥
         entities = query_filters.get("entities", [])
         if entities and isinstance(entities, list):
             for ent in entities:
                 if isinstance(ent, str) and ent.strip():
-                    and_conditions.append({"property": "Entities", "multi_select": {"contains": ent.strip()}})
+                    term = ent.strip()
+                    # Busca la palabra extraída por la IA ya sea en el Título o en el Resumen en toda tu BD
+                    and_conditions.append({
+                        "or": [
+                            {"property": "Name", "title": {"contains": term}},
+                            {"property": "Summary", "rich_text": {"contains": term}}
+                        ]
+                    })
 
         status = query_filters.get("status")
         if status in ["Pendiente", "Completado", "Cancelado"]:
@@ -138,7 +146,7 @@ def _build_notion_filter(query_filters: dict = None, category_fallback: str = No
     elif len(and_conditions) > 1: return {"and": and_conditions}
     return None
 
-def query_notion_db(query_filters: dict = None, category_filter: str = None, max_records: int = 50):
+def query_notion_db(query_filters: dict = None, category_filter: str = None, max_records: int = 100):
     url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
     headers = {
         "Authorization": f"Bearer {NOTION_API_KEY}",
@@ -164,7 +172,7 @@ def query_notion_db(query_filters: dict = None, category_filter: str = None, max
 
         if not raw_pages and filter_obj is not None:
             logger.info("Filtro sin coincidencias. Consulta amplia...")
-            fallback_payload = {"page_size": 15, "sorts": [{"property": "Date", "direction": "descending"}]}
+            fallback_payload = {"page_size": 30, "sorts": [{"property": "Date", "direction": "descending"}]}
             if category_filter and category_filter != "KNOWLEDGE":
                 fallback_payload["filter"] = {"property": "Category", "select": {"equals": category_filter}}
             fallback_res = requests.post(url, json=fallback_payload, headers=headers)
