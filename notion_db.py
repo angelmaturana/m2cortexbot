@@ -28,7 +28,9 @@ def save_to_notion(data: dict):
     title = metadata.get("title", "Entrada sin título")
     category = data.get("master_category", "KNOWLEDGE")
     summary = metadata.get("executive_summary", "")
-    tags = [t.replace("#", "").strip() for t in metadata.get("tags", []) if isinstance(t, str) and t.strip()]
+    
+    # Saneamiento de comas en tags
+    tags = [t.replace("#", "").replace(",", " ").strip() for t in metadata.get("tags", []) if isinstance(t, str) and t.strip()]
     amount = float(specific.get("numeric_amount") or 0.0)
 
     tz_madrid = ZoneInfo("Europe/Madrid")
@@ -55,7 +57,8 @@ def save_to_notion(data: dict):
 
     entities = metadata.get("entities", [])
     if entities and isinstance(entities, list):
-        clean_entities = [e.strip()[:100] for e in entities if isinstance(e, str) and e.strip()]
+        # 🔥 EL FIX: Reemplazamos las comas por espacios para evitar el bloqueo 400 de Notion
+        clean_entities = [e.replace(",", " ").strip()[:100] for e in entities if isinstance(e, str) and e.strip()]
         if clean_entities:
             properties["Entities"] = {"multi_select": [{"name": e} for e in clean_entities]}
 
@@ -116,13 +119,11 @@ def _build_notion_filter(query_filters: dict = None, category_fallback: str = No
         if tx_type in ["Gasto", "Ingreso", "Me Deben", "Debo"]:
             and_conditions.append({"property": "Transaction Type", "select": {"equals": tx_type}})
 
-        # 🔥 SOLUCIÓN GURÚ: Búsqueda de Texto Libre en lugar de etiquetas rígidas 🔥
         entities = query_filters.get("entities", [])
         if entities and isinstance(entities, list):
             for ent in entities:
                 if isinstance(ent, str) and ent.strip():
                     term = ent.strip()
-                    # Busca la palabra extraída por la IA ya sea en el Título o en el Resumen en toda tu BD
                     and_conditions.append({
                         "or": [
                             {"property": "Name", "title": {"contains": term}},
