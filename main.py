@@ -4,6 +4,7 @@ import os
 import threading
 import time
 import requests
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -148,7 +149,32 @@ async def handle_incoming_message(update: Update, context: ContextTypes.DEFAULT_
 
     except Exception as e:
         logger.error(f"Error procesando mensaje: {e}", exc_info=True)
-        await context.bot.send_message(chat_id=chat_id, text=f"❌ Error en M2Cortex: {str(e)}")
+        error_str = str(e)
+        
+        # Interceptor de límite de cuota (Error 429)
+        if "429" in error_str and "rate_limit_exceeded" in error_str.lower():
+            limit_match = re.search(r"Limit (\d+)", error_str)
+            used_match = re.search(r"Used (\d+)", error_str)
+            time_match = re.search(r"try again in ([0-9a-zA-Z\.]+)", error_str)
+            
+            limit_val = f"{int(limit_match.group(1)):,}".replace(",", ".") if limit_match else "N/A"
+            used_val = f"{int(used_match.group(1)):,}".replace(",", ".") if used_match else "N/A"
+            time_val = time_match.group(1) if time_match else "unos minutos"
+            
+            # Formateo dinámico de tiempo: limpia milisegundos y traduce sin importar magnitud
+            time_val = re.sub(r"\.\d+s", " seg", time_val)
+            time_val = time_val.replace("h", " horas, ").replace("m", " min y ")
+                
+            error_msg = (
+                "⚠️ *Límite de Inteligencia Alcanzado*\n"
+                "El modelo principal está descansando para evitar la saturación de los servidores.\n\n"
+                f"📊 *Consumo diario:* {used_val} / {limit_val} tokens\n"
+                f"⏳ *Tiempo de espera:* {time_val}\n\n"
+                "_Consejo: Inténtalo de nuevo en un rato, o cambia el modelo en tu archivo .env por uno más ligero._"
+            )
+            await context.bot.send_message(chat_id=chat_id, text=error_msg, parse_mode="Markdown")
+        else:
+            await context.bot.send_message(chat_id=chat_id, text=f"❌ Error en M2Cortex: {error_str}")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 M2Cortex activo (Groq Engine). Envíame texto, audios o fotos.")
