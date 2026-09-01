@@ -3,3 +3,4 @@ notion-client
 python-dotenv
 requests
 groq
+libsql-client
